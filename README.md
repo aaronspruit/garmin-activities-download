@@ -1,7 +1,7 @@
----
-title: Garmin Activities Download
-description: Run-once container that fetches Garmin Connect activities as GPX files, deployable via Docker Compose or a Kubernetes CronJob
----
+
+# Garmin Activities Download
+
+Run-once container that fetches Garmin Connect activities as GPX files, deployable via Docker Compose or a Kubernetes CronJob
 
 ## Overview
 
