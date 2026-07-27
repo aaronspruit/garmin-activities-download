@@ -17,12 +17,18 @@ class TestMain:
             tokenstore="/tmp/tokens",
             output_dir="/tmp/data",
             days_back=7,
+            download_formats=["FIT"],
         )
 
         result = main()
 
         assert result == 0
-        mock_download.assert_called_once()
+        mock_download.assert_called_once_with(
+            mock_auth.return_value,
+            output_dir="/tmp/data",
+            days_back=7,
+            formats=["FIT"],
+        )
 
     @patch("src.main.authenticate")
     @patch("src.main.load_config")
@@ -56,6 +62,7 @@ class TestMain:
             tokenstore="/tmp/tokens",
             output_dir="/tmp/data",
             days_back=7,
+            download_formats=["FIT"],
         )
 
         result = main()

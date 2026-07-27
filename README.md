@@ -1,11 +1,11 @@
 
 # Garmin Activities Download
 
-Run-once container that fetches Garmin Connect activities as GPX files, deployable via Docker Compose or a Kubernetes CronJob
+Run-once container that fetches Garmin Connect activities as GPX, FIT, and/or TCX files, deployable via Docker Compose or a Kubernetes CronJob
 
 ## Overview
 
-This container connects to Garmin Connect, fetches recent activities, and saves each one as a GPX file. It authenticates once using saved tokens, downloads any activities it has not already saved, then exits. That run-once design makes it a natural fit for a Kubernetes CronJob or a host crontab entry, rather than a long-running service.
+This container connects to Garmin Connect, fetches recent activities, and saves each one as a GPX, FIT, and/or TCX file. It authenticates once using saved tokens, downloads any activities it has not already saved, then exits. That run-once design makes it a natural fit for a Kubernetes CronJob or a host crontab entry, rather than a long-running service.
 
 Authentication tokens persist across runs, so the container only needs interactive credentials (including MFA) during initial setup. Every scheduled run afterward reuses those tokens headlessly.
 
@@ -37,7 +37,10 @@ To automate runs, add an entry to the host crontab that calls `docker compose ru
 0 6 * * * cd /path/to/garmin-activities-download && docker compose run --rm garmin-sync
 ```
 
-Downloaded GPX files land in `./data`, and tokens persist in `./tokens` between runs.
+Downloaded activity files land in `./data`, organized into `FIT`, `GPX`, and `TCX` subfolders based on the formats you configure, and tokens persist in `./tokens` between runs.
+
+> [!IMPORTANT]
+> Earlier versions saved GPX files directly in `./data`. Upgrading to this format-aware layout is a breaking change: existing flat GPX files remain in place, but new downloads land in the `./data/GPX` subfolder instead. Move existing files into `./data/GPX` if you want the downloader to keep recognizing them as already downloaded.
 
 ## Kubernetes Deployment
 
@@ -70,7 +73,8 @@ Update the Secret's `GARMIN_EMAIL` and `GARMIN_PASSWORD` values and the containe
 | `GARMIN_PASSWORD` | none | Garmin Connect account password, used for initial authentication and credential fallback |
 | `DAYS_BACK` | `7` | Number of days of activity history to check on each run |
 | `GARMINTOKENS` | `/app/tokens` | Path where authentication tokens are read from and written to |
-| `OUTPUT_DIR` | `/app/data` | Path where downloaded GPX files are saved |
+| `OUTPUT_DIR` | `/app/data` | Path where downloaded activity files are saved, in `FIT`, `GPX`, and `TCX` subfolders |
+| `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of formats to download: `FIT`, `GPX`, `TCX` |
 
 `GARMIN_EMAIL` and `GARMIN_PASSWORD` also support Docker secrets. Set them at `/run/secrets/garmin_email` and `/run/secrets/garmin_password`, and the container reads from those files before falling back to the environment variables.
 
