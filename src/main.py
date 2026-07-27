@@ -35,6 +35,7 @@ def main() -> int:
             garmin,
             output_dir=config.output_dir,
             days_back=config.days_back,
+            formats=config.download_formats,
         )
 
         logger.info("Completed: %d new activities downloaded", count)

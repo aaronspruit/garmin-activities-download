@@ -1,5 +1,7 @@
 """Shared test fixtures."""
 
+import io
+import zipfile
 from unittest.mock import MagicMock
 
 import garminconnect
@@ -36,6 +38,40 @@ SAMPLE_GPX = b"""<?xml version="1.0" encoding="UTF-8"?>
     </trkseg>
   </trk>
 </gpx>"""
+
+SAMPLE_TCX = b"""<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+  <Activities>
+    <Activity Sport="Running">
+      <Id>2026-07-20T06:30:00Z</Id>
+      <Lap StartTime="2026-07-20T06:30:00Z">
+        <TotalTimeSeconds>2400.0</TotalTimeSeconds>
+        <DistanceMeters>6200.0</DistanceMeters>
+      </Lap>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>"""
+
+SAMPLE_FIT_CONTENT = b"\x0e\x10FAKE_FIT_BINARY_CONTENT"
+
+
+def _build_zip(members: dict[str, bytes]) -> bytes:
+    """Build in-memory zip bytes containing the given name -> content members."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
+    return buffer.getvalue()
+
+
+SAMPLE_FIT_ZIP = _build_zip(
+    {
+        "manifest.json": b"{}",
+        "19876543210_ACTIVITY.fit": SAMPLE_FIT_CONTENT,
+    }
+)
+
+SAMPLE_EMPTY_ZIP = _build_zip({"manifest.json": b"{}"})
 
 
 @pytest.fixture

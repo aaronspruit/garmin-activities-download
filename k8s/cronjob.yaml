@@ -60,6 +60,8 @@ spec:
                   value: /app/data
                 - name: DAYS_BACK
                   value: "7"
+                - name: DOWNLOAD_FORMATS
+                  value: "FIT"
                 - name: GARMIN_EMAIL
                   valueFrom:
                     secretKeyRef:
