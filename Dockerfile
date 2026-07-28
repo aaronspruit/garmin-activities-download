@@ -3,10 +3,14 @@ FROM python:3.14-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-ARG UID=1000
-ARG GID=1000
-RUN groupadd -g $GID appuser && \
-    useradd -u $UID -g $GID -m -s /bin/bash appuser
+# Fixed UID/GID 1000. Deployments needing a different user override it at run
+# time -- compose `user:`, k8s `securityContext.runAsUser` -- instead of
+# rebuilding, since /app/data and /app/tokens are always mount points and the
+# ownership set below is shadowed by whatever the host or volume provides.
+# Nothing in src/ needs a home directory or a passwd entry, so the process runs
+# fine as a UID that does not exist in this image.
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g 1000 -m -s /bin/bash appuser
 
 WORKDIR /app
 

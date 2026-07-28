@@ -4,12 +4,12 @@
   // image (same python:3.14-slim base and non-root appuser).
   "build": {
     "dockerfile": "../Dockerfile",
-    "context": "..",
-    "args": { "UID": "1000", "GID": "1000" }
+    "context": ".."
   },
-  // Run as the image's existing non-root user. On Linux the default
-  // updateRemoteUserUID:true reconciles appuser's UID/GID 1000 with the host
-  // user to avoid bind-mount permission problems.
+  // Run as the image's existing non-root user. The Dockerfile fixes appuser at
+  // UID/GID 1000; on Linux updateRemoteUserUID:true remaps that to the host
+  // user when the container is created, avoiding bind-mount permission
+  // problems without any build arguments.
   "remoteUser": "appuser",
   "updateRemoteUserUID": true,
   "features": {

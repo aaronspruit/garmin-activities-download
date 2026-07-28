@@ -7,7 +7,7 @@ Run-once container that fetches Garmin Connect activities as GPX, FIT, and/or TC
 
 This container connects to Garmin Connect, fetches recent activities, and saves each one as a GPX, FIT, and/or TCX file. It authenticates once using saved tokens, downloads any activities it has not already saved, then exits. That run-once design makes it a natural fit for a Kubernetes CronJob or a host crontab entry, rather than a long-running service.
 
-Authentication tokens persist across runs, so the container only needs interactive credentials (including MFA) during initial setup. Every scheduled run afterward reuses those tokens headlessly.
+Authentication tokens persist across runs, so the container only needs interactive credentials (including MFA) during initial setup. Every scheduled run afterward reuses those tokens headlessly, refreshing and re-saving them as they approach expiry.
 
 ## Quick Start (Docker Compose)
 
@@ -37,10 +37,18 @@ To automate runs, add an entry to the host crontab that calls `docker compose ru
 0 6 * * * cd /path/to/garmin-activities-download && docker compose run --rm garmin-sync
 ```
 
-Downloaded activity files land in `./data`, organized into `FIT`, `GPX`, and `TCX` subfolders based on the formats you configure, and tokens persist in `./tokens` between runs.
+Downloaded activity files land in `./data`, organized into `FIT`, `GPX`, and `TCX` subfolders based on the formats you configure, and tokens persist in `./tokens` between runs. See [Output files](#output-files) for the naming scheme.
 
-> [!IMPORTANT]
-> Earlier versions saved GPX files directly in `./data`. Upgrading to this format-aware layout is a breaking change: existing flat GPX files remain in place, but new downloads land in the `./data/GPX` subfolder instead. Move existing files into `./data/GPX` if you want the downloader to keep recognizing them as already downloaded.
+### File ownership on Linux
+
+The container runs as UID/GID 1000, so files written to `./data` and `./tokens` are owned by that user. If your host user is different, set `UID` and `GID` in `.env` to your own `id -u` and `id -g` values:
+
+```dotenv
+UID=1001
+GID=1001
+```
+
+[compose.yaml](compose.yaml) applies these at run time, so they take effect on the next run with no rebuild — including against the pre-built image from GHCR. Set them in `.env` rather than inline on the command line, since `bash` treats `UID` as a readonly variable and `UID=1001 docker compose run ...` fails.
 
 ## Kubernetes Deployment
 
@@ -65,6 +73,17 @@ kubectl apply -f k8s/cronjob.yaml
 
 Update the Secret's `GARMIN_EMAIL` and `GARMIN_PASSWORD` values and the container image reference before applying. The manifest ships with a `hostPath` volume for output data, with a PVC alternative available in the comments for multi-node clusters.
 
+The pod runs as UID/GID 1000 via `securityContext`, with `fsGroup` set so the kubelet chowns the token PVC to a group the non-root process can write to. Adjust `runAsUser`/`runAsGroup` if your storage requires a different owner.
+
+> [!IMPORTANT]
+> `fsGroup` does not apply to `hostPath` volumes. `DirectoryOrCreate` creates the output path as `root:root`, which the non-root container cannot write to, so if you use Option A create the directory on the node first:
+>
+> ```bash
+> sudo mkdir -p /data/garmin-gpx && sudo chown 1000:1000 /data/garmin-gpx
+> ```
+>
+> Option B (the PVC) needs no such step.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -78,21 +97,68 @@ Update the Secret's `GARMIN_EMAIL` and `GARMIN_PASSWORD` values and the containe
 
 `GARMIN_EMAIL` and `GARMIN_PASSWORD` also support Docker secrets. Set them at `/run/secrets/garmin_email` and `/run/secrets/garmin_password`, and the container reads from those files before falling back to the environment variables.
 
+`DAYS_BACK` must be an integer and `DOWNLOAD_FORMATS` must contain only `FIT`, `GPX`, and `TCX`. Both are validated at startup, and an invalid value fails the run with exit code `2` before any download is attempted.
+
+## Output files
+
+Each activity is saved as `<activityId>.<extension>` inside a per-format subfolder, using the numeric Garmin Connect activity ID rather than the activity's date or name:
+
+```
+data/
+├── FIT/17284419021.fit
+├── GPX/17284419021.gpx
+└── TCX/17284419021.tcx
+```
+
+Deduplication is purely filesystem-based: on each run, an activity and format pair is skipped when its file already exists. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
+
+The downloader waits one second between downloads to stay clear of Garmin's rate limits. This is not configurable, so the first run of a wide `DAYS_BACK` window across several formats takes a while — expect roughly one second per file. Progress is logged per activity.
+
+> [!IMPORTANT]
+> Earlier versions saved GPX files directly in `./data`. Upgrading to this format-aware layout is a breaking change: existing flat GPX files remain in place, but new downloads land in the `./data/GPX` subfolder instead. Move existing files into `./data/GPX` if you want the downloader to keep recognizing them as already downloaded.
+
+## Exit codes
+
+The container runs once and exits. Since it is meant to run unattended on a schedule, use the exit code to decide whether a run needs attention:
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| `0` | Success. New activities downloaded, or nothing new to download | None |
+| `1` | Authentication failed, and no usable credential fallback was available | Re-run interactive setup (see below) |
+| `2` | Any other failure, such as invalid configuration or a Garmin API error | Check the logs; often transient and resolved by the next scheduled run |
+
+Code `1` is the one worth alerting on, because it does not resolve on its own.
+
+## Troubleshooting
+
+**Authentication fails on a scheduled run (exit code `1`).** Tokens do not normally need manual attention: `garminconnect` refreshes them on each login when they are close to expiring and writes the refreshed set back to the token store, so ordinary scheduled runs stay authenticated indefinitely. Exit code `1` therefore points at something that broke the token store rather than routine expiry — most often an account password change, a sign-out that revoked the session, a token directory that was not persisted between runs, or a long enough gap between runs that the underlying credential lapsed entirely.
+
+The container does fall back to `GARMIN_EMAIL` and `GARMIN_PASSWORD`, but that fallback cannot answer an MFA challenge headlessly. Re-run the interactive setup to mint a fresh token set:
+
+```bash
+docker compose run --rm -it garmin-sync python -m src.setup
+```
+
+On Kubernetes, re-run setup using either approach from [Kubernetes Deployment](#kubernetes-deployment) so the refreshed tokens land back in the PVC.
+
+**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<FORMAT>/<activityId>.<ext>`. Files that were renamed or moved are no longer recognized. Restore the original layout rather than widening `DAYS_BACK`.
+
+**Older activities are never fetched.** `DAYS_BACK` bounds every run, so activities older than that window are never considered. Run once with a larger value to backfill.
+
 ## Development
 
 ### Dev Container (recommended)
 
-This repo ships a [Dev Container](https://containers.dev/) at [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json). Opening the project in it gives you a ready-to-go environment with all tooling installed, so you can skip the manual setup below.
+This repo ships a [Dev Container](https://containers.dev/) at [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) — open it and skip the manual setup below. With Docker running and the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension installed, open the repo folder in VS Code and run **Dev Containers: Reopen in Container** from the Command Palette (`F1`). The first build takes a few minutes; after that the environment is ready when `postCreateCommand` finishes installing dependencies.
 
-In VS Code, install the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension, then run **Dev Containers: Reopen in Container** from the Command Palette (or click the prompt when it appears). On first build the container:
+It is built from the project [Dockerfile](Dockerfile), so development happens on the same `python:3.14-slim` base and non-root `appuser` as the shipped image. That base is minimal, so `git`, the GitHub CLI, and a configured shell are added as [Features](https://containers.dev/features), and dev dependencies are installed by `postCreateCommand`.
 
-* is built from the project [Dockerfile](Dockerfile), so it uses the same `python:3.14-slim` base and non-root `appuser` as the shipped image — matching CI and production;
-* installs runtime and dev dependencies via `postCreateCommand` (`pip install --user -r requirements.txt -r requirements-dev.txt`);
-* wires up the Python, `pytest`, and `ruff` extensions with format-on-save and import fixing already configured.
+Because the workspace mounts at `/workspaces/garmin-activities-download` rather than the image's `/app`, `OUTPUT_DIR` and `GARMINTOKENS` are overridden to point at the in-repo `./data` and `./tokens` folders. An interactive `python -m src.setup` or `python -m src.main` inside the container therefore reads and writes those directories directly.
 
-Once inside, `pytest --cov`, `ruff check .`, and `ruff format --check .` work exactly as in CI.
+You do not need the `UID`/`GID` setting described under [File ownership on Linux](#file-ownership-on-linux). On Linux, `updateRemoteUserUID` remaps `appuser` to your host user when the container is created, so workspace files you create stay owned by you.
 
-The container runs as `appuser` (UID/GID 1000). On Linux, `updateRemoteUserUID` reconciles that with your host user so files you create in the bind-mounted workspace stay owned by you. Your source — including `./data` and `./tokens` — is mounted at `/workspaces/garmin-activities-download`, and `OUTPUT_DIR`/`GARMINTOKENS` point there, so an interactive `python -m src.setup` / `python -m src.main` run reads and writes those in-repo folders.
+> [!NOTE]
+> The dev container has no Docker CLI and no mounted Docker socket, so `docker build` and `docker compose` commands cannot run inside it. Run those from a terminal on your host.
 
 ### Manual setup
 
@@ -123,7 +189,15 @@ docker build -t garmin-activities-download:test .
 
 ## CI/CD
 
-The [.github/workflows/ci.yml](.github/workflows/ci.yml) workflow runs on every push and pull request against `main`. It chains five jobs: `lint` and `test` run in parallel, `build-push` builds and publishes the image to GHCR once both pass, `security-scan` runs a Trivy vulnerability scan against the published image, and `release` creates a GitHub release when the pipeline runs against a version tag.
+The [.github/workflows/ci.yml](.github/workflows/ci.yml) workflow runs on pushes and pull requests against `main`, and on `v*.*.*` tags. It defines five jobs: `lint` and `test` run in parallel, then `build-push` builds the image, then `security-scan` runs a Trivy vulnerability scan (`CRITICAL` and `HIGH`) whose results are uploaded to GitHub code scanning, and finally `release` publishes a GitHub release.
+
+How much of that chain runs depends on the event:
+
+| Event | Jobs that run |
+|-------|---------------|
+| Pull request | `lint`, `test`, and `build-push` — the image is built but not pushed, so `security-scan` and `release` are skipped |
+| Push to `main` | The above, plus the image is pushed to GHCR with an attestation, plus `security-scan` |
+| `v*.*.*` tag | All five, ending in a published GitHub release |
 
 To cut a release, tag the commit and push the tag:
 
@@ -131,3 +205,7 @@ To cut a release, tag the commit and push the tag:
 git tag v1.0.0
 git push --tags
 ```
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).

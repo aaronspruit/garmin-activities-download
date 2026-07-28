@@ -36,12 +36,28 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          # The image runs as UID 1000, but that is an image convention, not a
+          # guarantee. Assert it here instead, so it holds against any tag.
+          # fsGroup makes the kubelet chown mounted PVCs to this group, which is
+          # what lets the non-root process write to them.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
           volumes:
             - name: token-storage
               persistentVolumeClaim:
                 claimName: garmin-tokens-pvc
             # Configure your data volume here:
             # Option A: hostPath (single-node clusters)
+            #
+            # NOTE: fsGroup does NOT apply to hostPath volumes. DirectoryOrCreate
+            # creates this path as root:root 0755, which the non-root container
+            # cannot write to. Create it on the node with the right owner before
+            # the first run:
+            #     sudo mkdir -p /data/garmin-gpx && sudo chown 1000:1000 /data/garmin-gpx
+            # Option B avoids this entirely.
             - name: data-storage
               hostPath:
                 path: /data/garmin-gpx
@@ -53,6 +69,12 @@ spec:
           containers:
             - name: garmin-sync
               image: ghcr.io/OWNER/garmin-activities-download:latest
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
               env:
                 - name: GARMINTOKENS
                   value: /app/tokens
