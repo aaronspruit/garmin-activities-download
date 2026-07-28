@@ -1,0 +1,48 @@
+{
+  "name": "garmin-activities-download",
+  // Reuse the project's Dockerfile so the dev environment matches the shipped
+  // image (same python:3.14-slim base and non-root appuser).
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "..",
+    "args": { "UID": "1000", "GID": "1000" }
+  },
+  // Run as the image's existing non-root user. On Linux the default
+  // updateRemoteUserUID:true reconciles appuser's UID/GID 1000 with the host
+  // user to avoid bind-mount permission problems.
+  "remoteUser": "appuser",
+  "updateRemoteUserUID": true,
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": { "installZsh": true },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  // The image only installs requirements.txt; dev tooling (pytest, ruff, ...)
+  // must be added at create time. --user because appuser cannot write to the
+  // system site-packages.
+  "postCreateCommand": "pip install --user -r requirements.txt -r requirements-dev.txt",
+  // The workspace mounts at /workspaces/<repo>, not the Dockerfile's /app, so
+  // point interactive `python -m src.main` runs at the in-workspace dirs.
+  "remoteEnv": {
+    "OUTPUT_DIR": "/workspaces/garmin-activities-download/data",
+    "GARMINTOKENS": "/workspaces/garmin-activities-download/tokens"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"],
+      "settings": {
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        "ruff.lineLength": 120,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+          }
+        }
+      }
+    }
+  }
+}
