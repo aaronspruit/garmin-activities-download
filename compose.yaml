@@ -2,10 +2,11 @@ services:
   garmin-sync:
     build:
       context: .
-      args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
     container_name: garmin-sync
+    # The image ships with UID/GID 1000. If your host user differs, set UID and
+    # GID in .env and they apply on the next run -- no rebuild, so this works
+    # against the pre-built GHCR image too.
+    user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - .env
     volumes:
