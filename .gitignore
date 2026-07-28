@@ -13,3 +13,18 @@ htmlcov/
 data/
 tokens/
 .copilot-tracking/
+.claude/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.devcontainer/devcontainer-lock.json
+
+# Coverage parallel data files (branch=true can emit these)
+.coverage.*
+
+# Local env overrides — keep the tracked template
+.env.*
+!.env.example
