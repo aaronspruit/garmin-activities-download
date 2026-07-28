@@ -80,7 +80,23 @@ Update the Secret's `GARMIN_EMAIL` and `GARMIN_PASSWORD` values and the containe
 
 ## Development
 
-Install runtime and development dependencies:
+### Dev Container (recommended)
+
+This repo ships a [Dev Container](https://containers.dev/) at [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json). Opening the project in it gives you a ready-to-go environment with all tooling installed, so you can skip the manual setup below.
+
+In VS Code, install the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension, then run **Dev Containers: Reopen in Container** from the Command Palette (or click the prompt when it appears). On first build the container:
+
+* is built from the project [Dockerfile](Dockerfile), so it uses the same `python:3.14-slim` base and non-root `appuser` as the shipped image — matching CI and production;
+* installs runtime and dev dependencies via `postCreateCommand` (`pip install --user -r requirements.txt -r requirements-dev.txt`);
+* wires up the Python, `pytest`, and `ruff` extensions with format-on-save and import fixing already configured.
+
+Once inside, `pytest --cov`, `ruff check .`, and `ruff format --check .` work exactly as in CI.
+
+The container runs as `appuser` (UID/GID 1000). On Linux, `updateRemoteUserUID` reconciles that with your host user so files you create in the bind-mounted workspace stay owned by you. Your source — including `./data` and `./tokens` — is mounted at `/workspaces/garmin-activities-download`, and `OUTPUT_DIR`/`GARMINTOKENS` point there, so an interactive `python -m src.setup` / `python -m src.main` run reads and writes those in-repo folders.
+
+### Manual setup
+
+If you prefer to work outside a container, install runtime and development dependencies:
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt

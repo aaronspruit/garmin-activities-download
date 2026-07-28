@@ -25,7 +25,7 @@ ruff format .            # apply formatting
 docker build -t garmin-activities-download:test .
 ```
 
-Runs against Python 3.13 in CI; project requires >= 3.12. Ruff line length is 120.
+Runs against Python 3.14 in CI (matching the Dockerfile `FROM python:3.14-slim`); project requires >= 3.12. Ruff line length is 120.
 
 ## Architecture
 
