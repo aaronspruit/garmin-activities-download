@@ -57,7 +57,8 @@ def _parse_targets(raw: str) -> list[DownloadTarget]:
 
     Each entry is either a bare format (`GPX`, saved to a `GPX` folder) or a
     `FORMAT:folder` pair (`FIT:user@example.com`). A format may appear more than
-    once as long as each occurrence targets a different folder.
+    once to target several folders; repeats of the same format and folder collapse
+    into one target.
     """
     entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
     if not entries:
@@ -75,9 +76,8 @@ def _parse_targets(raw: str) -> list[DownloadTarget]:
         folder = _validate_folder(raw_folder.strip(), entry) if separator else fmt
 
         target = DownloadTarget(format=fmt, folder=folder)
-        if target in targets:
-            raise ValueError(f"Duplicate DOWNLOAD_FORMATS entry: {fmt} is already downloaded to folder {folder!r}")
-        targets.append(target)
+        if target not in targets:
+            targets.append(target)
 
     return targets
 

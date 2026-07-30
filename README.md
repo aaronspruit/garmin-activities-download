@@ -107,7 +107,7 @@ A target is a format plus the folder it is saved into. Written bare, a format sa
 DOWNLOAD_FORMATS=FIT:you@example.com
 ```
 
-The same format may appear more than once, as long as each occurrence uses a different folder. This is the way to feed several downstream systems that each delete the files they import — every folder is deduplicated independently, so a system that empties its folder receives the activity again on the next run, while the other folders are left alone:
+The same format may appear more than once to fill several folders. This is the way to feed several downstream systems that each delete the files they import — every folder is deduplicated independently, so a system that empties its folder receives the activity again on the next run, while the other folders are left alone:
 
 ```bash
 DOWNLOAD_FORMATS=FIT:strava-inbox,FIT:archive,GPX
@@ -115,7 +115,7 @@ DOWNLOAD_FORMATS=FIT:strava-inbox,FIT:archive,GPX
 
 Each activity is still fetched from Garmin only once per format, no matter how many folders it is written to.
 
-Folder names must be a single folder name: no `/` or `\`, and neither `.` nor `..`. Format names are case-insensitive, folder names are used exactly as written, and repeating the same format and folder pair is a configuration error. Two different formats may share one folder, since their file extensions differ.
+Folder names must be a single folder name: no `/` or `\`, and neither `.` nor `..`. Format names are case-insensitive and folder names are used exactly as written. Repeating the same format and folder pair is harmless — the duplicate is ignored and the folder is filled once. Two different formats may share one folder, since their file extensions differ.
 
 ## Output files
 

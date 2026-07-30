@@ -104,17 +104,30 @@ class TestParseDownloadTargets:
 
         assert config.download_targets == [DownloadTarget("GPX", "my folder")]
 
-    def test_duplicate_format_and_folder_raises_value_error(self, monkeypatch):
+    def test_duplicate_format_and_folder_is_deduplicated(self, monkeypatch):
         monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT:inbox,FIT:inbox")
 
-        with pytest.raises(ValueError, match="Duplicate"):
-            load_config()
+        config = load_config()
 
-    def test_bare_duplicate_format_raises_value_error(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "GPX,GPX")
+        assert config.download_targets == [DownloadTarget("FIT", "inbox")]
 
-        with pytest.raises(ValueError, match="Duplicate"):
-            load_config()
+    def test_bare_duplicate_format_is_deduplicated(self, monkeypatch):
+        monkeypatch.setenv("DOWNLOAD_FORMATS", "GPX,gpx")
+
+        config = load_config()
+
+        assert config.download_targets == [DownloadTarget("GPX", "GPX")]
+
+    def test_deduplication_keeps_first_occurrence_order(self, monkeypatch):
+        monkeypatch.setenv("DOWNLOAD_FORMATS", "GPX:a,FIT:b,GPX:a,TCX:c")
+
+        config = load_config()
+
+        assert config.download_targets == [
+            DownloadTarget("GPX", "a"),
+            DownloadTarget("FIT", "b"),
+            DownloadTarget("TCX", "c"),
+        ]
 
     def test_invalid_format_with_custom_folder_raises_value_error(self, monkeypatch):
         monkeypatch.setenv("DOWNLOAD_FORMATS", "bogus:inbox")
