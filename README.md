@@ -142,16 +142,15 @@ data/
     └── you@example.com/17284419021.gpx
 ```
 
+Deduplication is purely filesystem-based: on each run, an activity is skipped for a format when the file already exists in that format's folder. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
+
+The downloader waits one second between downloads to stay clear of Garmin's rate limits. This is not configurable, so the first run of a wide `DAYS_BACK` window across several formats takes a while — expect roughly one second per file. Progress is logged per activity.
+
 ### Unsafe activity IDs
 
 The activity ID that names each file comes straight from the Garmin Connect API response, so it is validated before it is used to build a path: it must be made up only of ASCII letters and digits. Garmin returns plain numbers today, and letters are accepted so a future ID scheme keeps working without a code change, but anything else — a path separator, a `..` segment, an absolute path — is rejected.
 
 A rejected ID aborts the run with exit code `3` and logs the offending value; no files are written, including for activities later in the same batch. This is not something a normal run can hit. Seeing it means the response did not come from Garmin unmodified, so treat it as a signal to check what sits between the container and `connect.garmin.com` — an intercepting proxy, a DNS or TLS problem, or a tampered-with `garminconnect` install — rather than as a bug to work around.
-
-### Duplicate downloads
-Deduplication is purely filesystem-based: on each run, an activity is skipped for a format when the file already exists in that format's folder. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
-
-The downloader waits one second between downloads to stay clear of Garmin's rate limits. This is not configurable, so the first run of a wide `DAYS_BACK` window across several formats takes a while — expect roughly one second per file. Progress is logged per activity.
 
 ## Exit codes
 
