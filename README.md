@@ -128,6 +128,12 @@ data/
 └── TCX/17284419021.tcx
 ```
 
+### Unsafe activity IDs
+
+The activity ID that names each file comes straight from the Garmin Connect API response, so it is validated before it is used to build a path: it must be made up only of ASCII letters and digits. Garmin returns plain numbers today, and letters are accepted so a future ID scheme keeps working without a code change, but anything else — a path separator, a `..` segment, an absolute path — is rejected.
+
+A rejected ID aborts the run with exit code `3` and logs the offending value; no files are written, including for activities later in the same batch. This is not something a normal run can hit. Seeing it means the response did not come from Garmin unmodified, so treat it as a signal to check what sits between the container and `connect.garmin.com` — an intercepting proxy, a DNS or TLS problem, or a tampered-with `garminconnect` install — rather than as a bug to work around.
+
 Deduplication is purely filesystem-based: on each run, an activity is skipped for a target when the file already exists in that target's folder. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
 
 The downloader waits one second between downloads to stay clear of Garmin's rate limits. This is not configurable, so the first run of a wide `DAYS_BACK` window across several formats takes a while — expect roughly one second per file. Progress is logged per activity.
@@ -144,8 +150,9 @@ The container runs once and exits. Since it is meant to run unattended on a sche
 | `0` | Success. New activities downloaded, or nothing new to download | None |
 | `1` | Authentication failed, and no usable credential fallback was available | Re-run interactive setup (see below) |
 | `2` | Any other failure, such as invalid configuration or a Garmin API error | Check the logs; often transient and resolved by the next scheduled run |
+| `3` | Garmin returned an activity ID that is not alphanumeric, so no output path was built from it | Check the logs; see [Unsafe activity IDs](#unsafe-activity-ids) |
 
-Code `1` is the one worth alerting on, because it does not resolve on its own.
+Codes `1` and `3` are the ones worth alerting on, because neither resolves on its own.
 
 ## Troubleshooting
 

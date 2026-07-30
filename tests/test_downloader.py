@@ -4,7 +4,7 @@ import pytest
 from garminconnect import GarminConnectTooManyRequestsError
 
 from src.config import DownloadTarget
-from src.downloader import download_new_activities
+from src.downloader import UnsafeActivityIdError, download_new_activities
 from tests.conftest import (
     SAMPLE_ACTIVITY,
     SAMPLE_ACTIVITY_2,
@@ -159,6 +159,56 @@ class TestDownloadNewActivities:
         assert mock_garmin.download_activity.call_count == 1
         assert (tmp_path / "GPX" / f"{activity_id}.gpx").read_bytes() == b"existing"
         assert (tmp_path / "TCX" / f"{activity_id}.tcx").read_bytes() == SAMPLE_TCX
+
+
+class TestActivityIdValidation:
+    """The activity id is remote input that lands in a path, so it must stay alphanumeric."""
+
+    @pytest.mark.parametrize(
+        "activity_id",
+        [
+            "../../escaped",
+            "../" * 6 + "tmp/escaped",
+            "/tmp/absolute-escape",
+            "sub/dir/nested",
+            "..",
+            "id\0null",
+            "id with spaces",
+            "١٢٣",
+            "",
+        ],
+    )
+    def test_rejects_unsafe_id(self, mock_garmin, tmp_path, activity_id):
+        mock_garmin.get_activities_by_date.return_value = [{**SAMPLE_ACTIVITY, "activityId": activity_id}]
+        output = tmp_path / "data"
+
+        with pytest.raises(UnsafeActivityIdError, match="non-alphanumeric activity id"):
+            download_new_activities(mock_garmin, str(output), targets=["GPX"], days_back=7, download_delay=0)
+
+        mock_garmin.download_activity.assert_not_called()
+        # Nothing was written anywhere -- inside the output dir or outside it.
+        assert list(tmp_path.rglob("*.gpx")) == []
+
+    def test_aborts_run_without_processing_later_activities(self, mock_garmin, tmp_path):
+        mock_garmin.get_activities_by_date.return_value = [
+            {**SAMPLE_ACTIVITY, "activityId": "../../escaped"},
+            SAMPLE_ACTIVITY_2,
+        ]
+
+        with pytest.raises(UnsafeActivityIdError):
+            download_new_activities(mock_garmin, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        mock_garmin.download_activity.assert_not_called()
+        assert not (tmp_path / "GPX" / f"{SAMPLE_ACTIVITY_2['activityId']}.gpx").exists()
+
+    @pytest.mark.parametrize("activity_id", ["19876543210", "a1b2c3", "ACT42"])
+    def test_accepts_alphanumeric_id(self, mock_garmin, tmp_path, activity_id):
+        mock_garmin.get_activities_by_date.return_value = [{**SAMPLE_ACTIVITY, "activityId": activity_id}]
+
+        count = download_new_activities(mock_garmin, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        assert count == 1
+        assert (tmp_path / "GPX" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
 
 
 class TestCustomFolderTargets:
