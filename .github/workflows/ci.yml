@@ -115,12 +115,21 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Fails the build only on CRITICAL/HIGH vulnerabilities that have a fix
+      # available upstream -- i.e. "Debian shipped a patch and this image has
+      # not been rebuilt onto it". Unfixed vulns cannot be actioned here, so
+      # they must not block a release. `limit-severities-for-sarif` is required
+      # for the SARIF upload to honour `severity`; without it the action
+      # reports every severity to code scanning regardless of this filter.
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-push.outputs.digest }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          limit-severities-for-sarif: true
+          exit-code: '1'
       - uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
