@@ -5,16 +5,21 @@ from dataclasses import dataclass
 
 VALID_DOWNLOAD_FORMATS = {"FIT", "GPX", "TCX"}
 
-# Characters that would let a folder name escape output_dir or confuse the filesystem.
+# Characters that would let a subfolder name escape its format folder or confuse the filesystem.
 _ILLEGAL_FOLDER_CHARS = ("/", "\\", "\0")
 
 
 @dataclass(frozen=True)
 class DownloadTarget:
-    """A single format-to-folder download destination."""
+    """A single download destination: a format, optionally in a subfolder of it."""
 
     format: str
-    folder: str
+    subfolder: str | None = None
+
+    @property
+    def path(self) -> str:
+        """Destination path relative to `output_dir`: `FORMAT` or `FORMAT/subfolder`."""
+        return self.format if self.subfolder is None else os.path.join(self.format, self.subfolder)
 
 
 @dataclass
@@ -39,26 +44,26 @@ def _read_secret(name: str) -> str | None:
         return os.environ.get(name)
 
 
-def _validate_folder(folder: str, entry: str) -> str:
-    """Validate a custom folder name as a single safe path component."""
+def _validate_subfolder(folder: str, entry: str) -> str:
+    """Validate a custom subfolder name as a single safe path component."""
     if not folder:
-        raise ValueError(f"Invalid DOWNLOAD_FORMATS entry {entry!r}: folder name must not be empty")
+        raise ValueError(f"Invalid DOWNLOAD_FORMATS entry {entry!r}: subfolder name must not be empty")
     if any(char in folder for char in _ILLEGAL_FOLDER_CHARS):
         raise ValueError(
-            f"Invalid DOWNLOAD_FORMATS entry {entry!r}: folder name must be a single folder, without path separators"
+            f"Invalid DOWNLOAD_FORMATS entry {entry!r}: subfolder name must be a single folder, without path separators"
         )
     if folder in (".", ".."):
-        raise ValueError(f"Invalid DOWNLOAD_FORMATS entry {entry!r}: folder name must not be {folder!r}")
+        raise ValueError(f"Invalid DOWNLOAD_FORMATS entry {entry!r}: subfolder name must not be {folder!r}")
     return folder
 
 
 def _parse_targets(raw: str) -> list[DownloadTarget]:
     """Parse and validate a comma-separated DOWNLOAD_FORMATS value.
 
-    Each entry is either a bare format (`GPX`, saved to a `GPX` folder) or a
-    `FORMAT:folder` pair (`FIT:user@example.com`). A format may appear more than
-    once to target several folders; repeats of the same format and folder collapse
-    into one target.
+    Each entry is either a bare format (`GPX`, saved to `GPX/`) or a
+    `FORMAT:subfolder` pair (`FIT:folderA`, saved to `FIT/folderA/`).
+    A format may appear more than once to target several folders; repeats of the
+    same format and subfolder collapse into one target.
     """
     entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
     if not entries:
@@ -73,9 +78,9 @@ def _parse_targets(raw: str) -> list[DownloadTarget]:
                 f"Invalid DOWNLOAD_FORMATS format {fmt!r} in entry {entry!r}. "
                 f"Valid options: {sorted(VALID_DOWNLOAD_FORMATS)}"
             )
-        folder = _validate_folder(raw_folder.strip(), entry) if separator else fmt
+        subfolder = _validate_subfolder(raw_folder.strip(), entry) if separator else None
 
-        target = DownloadTarget(format=fmt, folder=folder)
+        target = DownloadTarget(format=fmt, subfolder=subfolder)
         if target not in targets:
             targets.append(target)
 

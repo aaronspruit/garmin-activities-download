@@ -19,7 +19,7 @@ class TestMain:
             tokenstore="/tmp/tokens",
             output_dir="/tmp/data",
             days_back=7,
-            download_targets=[DownloadTarget("FIT", "FIT")],
+            download_targets=[DownloadTarget("FIT")],
         )
 
         result = main()
@@ -29,7 +29,7 @@ class TestMain:
             mock_auth.return_value,
             output_dir="/tmp/data",
             days_back=7,
-            targets=[DownloadTarget("FIT", "FIT")],
+            targets=[DownloadTarget("FIT")],
         )
 
     @patch("src.main.authenticate")
@@ -76,7 +76,7 @@ class TestMain:
             tokenstore="/tmp/tokens",
             output_dir="/tmp/data",
             days_back=7,
-            download_targets=[DownloadTarget("FIT", "FIT")],
+            download_targets=[DownloadTarget("FIT")],
         )
 
         result = main()

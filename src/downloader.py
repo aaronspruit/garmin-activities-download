@@ -52,10 +52,10 @@ def _is_safe_activity_id(activity_id: object) -> bool:
 
 
 def _normalize_targets(targets: list[DownloadTarget | str] | None) -> list[DownloadTarget]:
-    """Accept targets as `DownloadTarget`s or bare format tokens (folder = format)."""
+    """Accept targets as `DownloadTarget`s or bare format tokens (no subfolder)."""
     if not targets:
-        return [DownloadTarget(format="FIT", folder="FIT")]
-    return [DownloadTarget(format=t, folder=t) if isinstance(t, str) else t for t in targets]
+        return [DownloadTarget(format="FIT")]
+    return [DownloadTarget(format=t) if isinstance(t, str) else t for t in targets]
 
 
 def _extract_fit_bytes(zip_bytes: bytes) -> bytes:
@@ -74,16 +74,18 @@ def download_new_activities(
     days_back: int = 7,
     download_delay: float = 1.0,
 ) -> int:
-    """Download activity files (one or more format/folder targets) not already saved.
+    """Download activity files (one or more format/subfolder targets) not already saved.
 
-    A format requested by several targets is fetched from Garmin once per activity
-    and written to each folder that is still missing it.
+    Every target lives under its format's folder, so a target is written to
+    `<output_dir>/<FORMAT>` or `<output_dir>/<FORMAT>/<subfolder>` and a folder only
+    ever holds files of one format. A format requested by several targets is fetched
+    from Garmin once per activity and written to each folder that is still missing it.
 
     Args:
         garmin: Authenticated Garmin client.
-        output_dir: Directory under which the target subfolders are created.
-        targets: `DownloadTarget`s, or bare format tokens ("FIT", "GPX", "TCX") whose
-            folder matches the format. Defaults to FIT into a "FIT" folder.
+        output_dir: Directory under which the target folders are created.
+        targets: `DownloadTarget`s, or bare format tokens ("FIT", "GPX", "TCX") that
+            save directly into the format folder. Defaults to FIT into "FIT".
         days_back: Number of days to look back for activities.
         download_delay: Seconds to wait between downloads (rate limit protection).
 
@@ -97,11 +99,11 @@ def download_new_activities(
     targets = _normalize_targets(targets)
 
     for target in targets:
-        os.makedirs(os.path.join(output_dir, target.folder), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, target.path), exist_ok=True)
 
-    folders_by_format: dict[str, list[str]] = {}
+    paths_by_format: dict[str, list[str]] = {}
     for target in targets:
-        folders_by_format.setdefault(target.format, []).append(target.folder)
+        paths_by_format.setdefault(target.format, []).append(target.path)
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -123,7 +125,7 @@ def download_new_activities(
                 f"refusing to build an output path from it"
             )
 
-        for fmt, folders in folders_by_format.items():
+        for fmt, folders in paths_by_format.items():
             spec = FORMAT_SPECS[fmt]
             filename = f"{activity_id}.{spec['extension']}"
             missing = [
