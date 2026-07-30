@@ -92,16 +92,34 @@ The pod runs as UID/GID 1000 via `securityContext`, with `fsGroup` set so the ku
 | `GARMIN_PASSWORD` | none | Garmin Connect account password, used for initial authentication and credential fallback |
 | `DAYS_BACK` | `7` | Number of days of activity history to check on each run |
 | `GARMINTOKENS` | `/app/tokens` | Path where authentication tokens are read from and written to |
-| `OUTPUT_DIR` | `/app/data` | Path where downloaded activity files are saved, in `FIT`, `GPX`, and `TCX` subfolders |
-| `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of formats to download: `FIT`, `GPX`, `TCX` |
+| `OUTPUT_DIR` | `/app/data` | Path where downloaded activity files are saved, in one subfolder per download target |
+| `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of download targets. Each is a format (`FIT`, `GPX`, `TCX`) with an optional `:folder` override |
 
 `GARMIN_EMAIL` and `GARMIN_PASSWORD` also support Docker secrets. Set them at `/run/secrets/garmin_email` and `/run/secrets/garmin_password`, and the container reads from those files before falling back to the environment variables.
 
-`DAYS_BACK` must be an integer and `DOWNLOAD_FORMATS` must contain only `FIT`, `GPX`, and `TCX`. Both are validated at startup, and an invalid value fails the run with exit code `2` before any download is attempted.
+`DAYS_BACK` must be an integer and every `DOWNLOAD_FORMATS` entry must name one of `FIT`, `GPX`, and `TCX`. Both are validated at startup, and an invalid value fails the run with exit code `2` before any download is attempted.
+
+### Download targets
+
+A target is a format plus the folder it is saved into. Written bare, a format saves into a folder of the same name, so `DOWNLOAD_FORMATS=FIT,GPX` fills `data/FIT` and `data/GPX`. Add `:folder` to choose the folder name instead:
+
+```bash
+DOWNLOAD_FORMATS=FIT:you@example.com
+```
+
+The same format may appear more than once, as long as each occurrence uses a different folder. This is the way to feed several downstream systems that each delete the files they import — every folder is deduplicated independently, so a system that empties its folder receives the activity again on the next run, while the other folders are left alone:
+
+```bash
+DOWNLOAD_FORMATS=FIT:strava-inbox,FIT:archive,GPX
+```
+
+Each activity is still fetched from Garmin only once per format, no matter how many folders it is written to.
+
+Folder names must be a single folder name: no `/` or `\`, and neither `.` nor `..`. Format names are case-insensitive, folder names are used exactly as written, and repeating the same format and folder pair is a configuration error. Two different formats may share one folder, since their file extensions differ.
 
 ## Output files
 
-Each activity is saved as `<activityId>.<extension>` inside a per-format subfolder, using the numeric Garmin Connect activity ID rather than the activity's date or name:
+Each activity is saved as `<activityId>.<extension>` inside its target's subfolder, using the numeric Garmin Connect activity ID rather than the activity's date or name:
 
 ```
 data/
@@ -110,7 +128,7 @@ data/
 └── TCX/17284419021.tcx
 ```
 
-Deduplication is purely filesystem-based: on each run, an activity and format pair is skipped when its file already exists. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
+Deduplication is purely filesystem-based: on each run, an activity is skipped for a target when the file already exists in that target's folder. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
 
 The downloader waits one second between downloads to stay clear of Garmin's rate limits. This is not configurable, so the first run of a wide `DAYS_BACK` window across several formats takes a while — expect roughly one second per file. Progress is logged per activity.
 
@@ -141,7 +159,7 @@ docker compose run --rm -it garmin-sync python -m src.setup
 
 On Kubernetes, re-run setup using either approach from [Kubernetes Deployment](#kubernetes-deployment) so the refreshed tokens land back in the PVC.
 
-**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<FORMAT>/<activityId>.<ext>`. Files that were renamed or moved are no longer recognized. Restore the original layout rather than widening `DAYS_BACK`.
+**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<folder>/<activityId>.<ext>`, where `<folder>` comes from the download target. Files that were renamed or moved — or that live in a folder no longer named in `DOWNLOAD_FORMATS` — are no longer recognized. Restore the original layout, or add the old folder name back as a target, rather than widening `DAYS_BACK`.
 
 **Older activities are never fetched.** `DAYS_BACK` bounds every run, so activities older than that window are never considered. Run once with a larger value to backfill.
 

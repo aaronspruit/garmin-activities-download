@@ -9,28 +9,34 @@ from datetime import datetime, timedelta
 
 from garminconnect import Garmin
 
+from src.config import DownloadTarget
+
 logger = logging.getLogger(__name__)
 
 FORMAT_SPECS = {
     "FIT": {
         "dl_fmt": Garmin.ActivityDownloadFormat.ORIGINAL,
-        "folder": "FIT",
         "extension": "fit",
         "zipped": True,
     },
     "GPX": {
         "dl_fmt": Garmin.ActivityDownloadFormat.GPX,
-        "folder": "GPX",
         "extension": "gpx",
         "zipped": False,
     },
     "TCX": {
         "dl_fmt": Garmin.ActivityDownloadFormat.TCX,
-        "folder": "TCX",
         "extension": "tcx",
         "zipped": False,
     },
 }
+
+
+def _normalize_targets(targets: list[DownloadTarget | str] | None) -> list[DownloadTarget]:
+    """Accept targets as `DownloadTarget`s or bare format tokens (folder = format)."""
+    if not targets:
+        return [DownloadTarget(format="FIT", folder="FIT")]
+    return [DownloadTarget(format=t, folder=t) if isinstance(t, str) else t for t in targets]
 
 
 def _extract_fit_bytes(zip_bytes: bytes) -> bytes:
@@ -45,27 +51,34 @@ def _extract_fit_bytes(zip_bytes: bytes) -> bytes:
 def download_new_activities(
     garmin: Garmin,
     output_dir: str,
-    formats: list[str] | None = None,
+    targets: list[DownloadTarget | str] | None = None,
     days_back: int = 7,
     download_delay: float = 1.0,
 ) -> int:
-    """Download activity files (one or more formats) not already saved.
+    """Download activity files (one or more format/folder targets) not already saved.
+
+    A format requested by several targets is fetched from Garmin once per activity
+    and written to each folder that is still missing it.
 
     Args:
         garmin: Authenticated Garmin client.
-        output_dir: Directory under which per-format subfolders are created.
-        formats: List of format tokens ("FIT", "GPX", "TCX") to download. Defaults to ["FIT"].
+        output_dir: Directory under which the target subfolders are created.
+        targets: `DownloadTarget`s, or bare format tokens ("FIT", "GPX", "TCX") whose
+            folder matches the format. Defaults to FIT into a "FIT" folder.
         days_back: Number of days to look back for activities.
         download_delay: Seconds to wait between downloads (rate limit protection).
 
     Returns:
         Number of new activity files downloaded.
     """
-    formats = formats or ["FIT"]
-    specs = [FORMAT_SPECS[fmt] for fmt in formats]
+    targets = _normalize_targets(targets)
 
-    for spec in specs:
-        os.makedirs(os.path.join(output_dir, spec["folder"]), exist_ok=True)
+    for target in targets:
+        os.makedirs(os.path.join(output_dir, target.folder), exist_ok=True)
+
+    folders_by_format: dict[str, list[str]] = {}
+    for target in targets:
+        folders_by_format.setdefault(target.format, []).append(target.folder)
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -81,14 +94,26 @@ def download_new_activities(
         activity_id = activity["activityId"]
         activity_name = activity.get("activityName", "Unknown")
 
-        for fmt, spec in zip(formats, specs):
-            filepath = os.path.join(output_dir, spec["folder"], f"{activity_id}.{spec['extension']}")
+        for fmt, folders in folders_by_format.items():
+            spec = FORMAT_SPECS[fmt]
+            filename = f"{activity_id}.{spec['extension']}"
+            missing = [
+                os.path.join(output_dir, folder, filename)
+                for folder in folders
+                if not os.path.exists(os.path.join(output_dir, folder, filename))
+            ]
 
-            if os.path.exists(filepath):
-                skipped += 1
+            skipped += len(folders) - len(missing)
+            if not missing:
                 continue
 
-            logger.info("Downloading activity %s (%s): %s", activity_id, fmt, activity_name)
+            logger.info(
+                "Downloading activity %s (%s -> %s): %s",
+                activity_id,
+                fmt,
+                ", ".join(os.path.dirname(path) for path in missing),
+                activity_name,
+            )
             data = garmin.download_activity(activity_id, dl_fmt=spec["dl_fmt"])
 
             if spec["zipped"]:
@@ -100,10 +125,10 @@ def download_new_activities(
                         time.sleep(download_delay)
                     continue
 
-            with open(filepath, "wb") as f:
-                f.write(data)
-
-            downloaded += 1
+            for filepath in missing:
+                with open(filepath, "wb") as f:
+                    f.write(data)
+                downloaded += 1
 
             if download_delay > 0:
                 time.sleep(download_delay)
