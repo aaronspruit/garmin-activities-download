@@ -20,9 +20,10 @@ def main() -> int:
     try:
         config = load_config()
         logger.info(
-            "Starting Garmin activity download (days_back=%d, output=%s)",
+            "Starting Garmin activity download (days_back=%d, output=%s, targets=%s)",
             config.days_back,
             config.output_dir,
+            ", ".join(f"{t.format}->{t.folder}" for t in config.download_targets),
         )
 
         garmin = authenticate(
@@ -35,7 +36,7 @@ def main() -> int:
             garmin,
             output_dir=config.output_dir,
             days_back=config.days_back,
-            formats=config.download_formats,
+            targets=config.download_targets,
         )
 
         logger.info("Completed: %d new activities downloaded", count)

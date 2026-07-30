@@ -5,6 +5,17 @@ from dataclasses import dataclass
 
 VALID_DOWNLOAD_FORMATS = {"FIT", "GPX", "TCX"}
 
+# Characters that would let a folder name escape output_dir or confuse the filesystem.
+_ILLEGAL_FOLDER_CHARS = ("/", "\\", "\0")
+
+
+@dataclass(frozen=True)
+class DownloadTarget:
+    """A single format-to-folder download destination."""
+
+    format: str
+    folder: str
+
 
 @dataclass
 class Config:
@@ -15,7 +26,7 @@ class Config:
     tokenstore: str
     output_dir: str
     days_back: int
-    download_formats: list[str]
+    download_targets: list[DownloadTarget]
 
 
 def _read_secret(name: str) -> str | None:
@@ -28,17 +39,47 @@ def _read_secret(name: str) -> str | None:
         return os.environ.get(name)
 
 
-def _parse_formats(raw: str) -> list[str]:
-    """Parse and validate a comma-separated DOWNLOAD_FORMATS value."""
-    formats = [f.strip().upper() for f in raw.split(",") if f.strip()]
-    if not formats:
-        raise ValueError("DOWNLOAD_FORMATS must not be empty")
-    invalid = sorted(set(formats) - VALID_DOWNLOAD_FORMATS)
-    if invalid:
+def _validate_folder(folder: str, entry: str) -> str:
+    """Validate a custom folder name as a single safe path component."""
+    if not folder:
+        raise ValueError(f"Invalid DOWNLOAD_FORMATS entry {entry!r}: folder name must not be empty")
+    if any(char in folder for char in _ILLEGAL_FOLDER_CHARS):
         raise ValueError(
-            f"Invalid DOWNLOAD_FORMATS value(s): {invalid}. Valid options: {sorted(VALID_DOWNLOAD_FORMATS)}"
+            f"Invalid DOWNLOAD_FORMATS entry {entry!r}: folder name must be a single folder, without path separators"
         )
-    return formats
+    if folder in (".", ".."):
+        raise ValueError(f"Invalid DOWNLOAD_FORMATS entry {entry!r}: folder name must not be {folder!r}")
+    return folder
+
+
+def _parse_targets(raw: str) -> list[DownloadTarget]:
+    """Parse and validate a comma-separated DOWNLOAD_FORMATS value.
+
+    Each entry is either a bare format (`GPX`, saved to a `GPX` folder) or a
+    `FORMAT:folder` pair (`FIT:user@example.com`). A format may appear more than
+    once to target several folders; repeats of the same format and folder collapse
+    into one target.
+    """
+    entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+    if not entries:
+        raise ValueError("DOWNLOAD_FORMATS must not be empty")
+
+    targets: list[DownloadTarget] = []
+    for entry in entries:
+        fmt, separator, raw_folder = entry.partition(":")
+        fmt = fmt.strip().upper()
+        if fmt not in VALID_DOWNLOAD_FORMATS:
+            raise ValueError(
+                f"Invalid DOWNLOAD_FORMATS format {fmt!r} in entry {entry!r}. "
+                f"Valid options: {sorted(VALID_DOWNLOAD_FORMATS)}"
+            )
+        folder = _validate_folder(raw_folder.strip(), entry) if separator else fmt
+
+        target = DownloadTarget(format=fmt, folder=folder)
+        if target not in targets:
+            targets.append(target)
+
+    return targets
 
 
 def load_config() -> Config:
@@ -49,5 +90,5 @@ def load_config() -> Config:
         tokenstore=os.environ.get("GARMINTOKENS", "/app/tokens"),
         output_dir=os.environ.get("OUTPUT_DIR", "/app/data"),
         days_back=int(os.environ.get("DAYS_BACK", "7")),
-        download_formats=_parse_formats(os.environ.get("DOWNLOAD_FORMATS", "FIT")),
+        download_targets=_parse_targets(os.environ.get("DOWNLOAD_FORMATS", "FIT")),
     )

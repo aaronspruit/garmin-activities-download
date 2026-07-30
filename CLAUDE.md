@@ -33,9 +33,9 @@ A **run-once** container: it authenticates, downloads any new Garmin Connect act
 
 The workflow is a straight three-stage pipeline wired in [src/main.py](src/main.py):
 
-1. **[src/config.py](src/config.py)** — `load_config()` builds a `Config` dataclass from env vars, with Docker-secret fallback: `_read_secret()` reads `/run/secrets/<name lowercased>` first, then the env var. `DOWNLOAD_FORMATS` is validated against `{FIT, GPX, TCX}` and raises `ValueError` on unknown formats.
+1. **[src/config.py](src/config.py)** — `load_config()` builds a `Config` dataclass from env vars, with Docker-secret fallback: `_read_secret()` reads `/run/secrets/<name lowercased>` first, then the env var. `DOWNLOAD_FORMATS` parses into a list of `DownloadTarget(format, folder)` — each comma-separated entry is `FORMAT` (folder defaults to the format name) or `FORMAT:folder`. Formats are validated against `{FIT, GPX, TCX}`; folders must be a single safe path component. Both raise `ValueError`. A repeated `(format, folder)` pair is silently deduplicated, keeping first-occurrence order.
 2. **[src/auth.py](src/auth.py)** — `authenticate()` tries saved tokens (`Garmin.login(tokenstore)`) first; only on failure does it fall back to email/password login (which then persists fresh tokens). With neither, it raises `AuthenticationError`. Headless runs rely on tokens already existing — see setup below.
-3. **[src/downloader.py](src/downloader.py)** — `download_new_activities()` fetches activities in the `days_back` window and downloads each configured format. **Dedup is filesystem-based**: an activity/format is skipped if `<output_dir>/<FOLDER>/<activityId>.<ext>` already exists — there is no database or manifest. Behavior per format is driven by the `FORMAT_SPECS` table. FIT is special: Garmin returns it as an `ORIGINAL`-format zip, so `_extract_fit_bytes()` pulls the first `.fit` member out before writing. A `download_delay` (default 1s) between downloads guards against rate limits.
+3. **[src/downloader.py](src/downloader.py)** — `download_new_activities()` fetches activities in the `days_back` window and downloads each configured target. **Dedup is filesystem-based**: an activity/target is skipped if `<output_dir>/<folder>/<activityId>.<ext>` already exists — there is no database or manifest. Behavior per format is driven by the `FORMAT_SPECS` table. Targets are grouped by format so a format wanted in several folders costs one Garmin download per activity, written to every folder still missing it. FIT is special: Garmin returns it as an `ORIGINAL`-format zip, so `_extract_fit_bytes()` pulls the first `.fit` member out before writing. A `download_delay` (default 1s) between downloads guards against rate limits.
 
 ### Setup vs. main entrypoint
 
@@ -44,11 +44,11 @@ The workflow is a straight three-stage pipeline wired in [src/main.py](src/main.
 
 ### Output layout (breaking-change awareness)
 
-Files are written into per-format subfolders: `data/FIT/`, `data/GPX/`, `data/TCX/`. Earlier versions wrote GPX flat into `data/`. Because dedup is path-based, flat legacy files are not recognized as already-downloaded — this is a known breaking change noted in the README.
+Files are written into one subfolder per target, named after the format unless overridden: `data/FIT/`, `data/GPX/`, `data/TCX/`. Earlier versions wrote GPX flat into `data/`. Because dedup is path-based, flat legacy files are not recognized as already-downloaded — this is a known breaking change noted in the README.
 
 ## Configuration
 
-All config is env-var driven (see the table in [README.md](README.md)). Key vars: `GARMIN_EMAIL`, `GARMIN_PASSWORD` (both secret-aware), `DAYS_BACK` (default 7), `GARMINTOKENS` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `DOWNLOAD_FORMATS` (default `FIT`). Docker Compose mounts `./data` and `./tokens` as volumes to persist across the run-once lifecycle.
+All config is env-var driven (see the table in [README.md](README.md)). Key vars: `GARMIN_EMAIL`, `GARMIN_PASSWORD` (both secret-aware), `DAYS_BACK` (default 7), `GARMINTOKENS` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `DOWNLOAD_FORMATS` (default `FIT`, accepts `FORMAT[:folder]` entries and repeated formats). Docker Compose mounts `./data` and `./tokens` as volumes to persist across the run-once lifecycle.
 
 ## Testing notes
 

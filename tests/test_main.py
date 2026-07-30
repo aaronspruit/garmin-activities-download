@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from src.auth import AuthenticationError
+from src.config import DownloadTarget
 from src.main import main
 
 
@@ -17,7 +18,7 @@ class TestMain:
             tokenstore="/tmp/tokens",
             output_dir="/tmp/data",
             days_back=7,
-            download_formats=["FIT"],
+            download_targets=[DownloadTarget("FIT", "FIT")],
         )
 
         result = main()
@@ -27,7 +28,7 @@ class TestMain:
             mock_auth.return_value,
             output_dir="/tmp/data",
             days_back=7,
-            formats=["FIT"],
+            targets=[DownloadTarget("FIT", "FIT")],
         )
 
     @patch("src.main.authenticate")
@@ -62,7 +63,7 @@ class TestMain:
             tokenstore="/tmp/tokens",
             output_dir="/tmp/data",
             days_back=7,
-            download_formats=["FIT"],
+            download_targets=[DownloadTarget("FIT", "FIT")],
         )
 
         result = main()
