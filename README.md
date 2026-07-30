@@ -101,7 +101,7 @@ The pod runs as UID/GID 1000 via `securityContext`, with `fsGroup` set so the ku
 
 ### Download formats
 
-A format is a format plus, optionally, a subfolder inside that format's folder. Every path starts with the format, so `data/<FORMAT>/` always holds only that format's files. Written bare, a format saves directly into its own folder, so `DOWNLOAD_FORMATS=FIT,GPX` fills `data/FIT` and `data/GPX`. Add `:subfolder` to nest one level deeper:
+A downloaded format is a format plus, optionally, a subfolder inside that format's folder. Every path starts with the format, so `data/<FORMAT>/` always holds only that format's files. Written bare, a format saves directly into its own folder, so `DOWNLOAD_FORMATS=FIT,GPX` fills `data/FIT` and `data/GPX`. Add `:subfolder` to nest one level deeper:
 
 ```bash
 DOWNLOAD_FORMATS=FIT:folderA
@@ -180,7 +180,7 @@ docker compose run --rm -it garmin-sync python -m src.setup
 
 On Kubernetes, re-run setup using either approach from [Kubernetes Deployment](#kubernetes-deployment) so the refreshed tokens land back in the PVC.
 
-**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<FORMAT>[/<subfolder>]/<activityId>.<ext>`, built from the download format. Files that were renamed or moved — or that live in a folder no longer named in `DOWNLOAD_FORMATS` — are no longer recognized. Restore the original layout, or add the old subfolder back as a format, rather than widening `DAYS_BACK`.
+**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<FORMAT>[/<subfolder>]/<activityId>.<ext>`, built from the download format. Files that were renamed or moved — or that live in a folder no longer named in `DOWNLOAD_FORMATS` — are no longer recognized. Restore the original layout, or add the old subfolder back as a download format, rather than widening `DAYS_BACK`.
 
 **Older activities are never fetched.** `DAYS_BACK` bounds every run, so activities older than that window are never considered. Run once with a larger value to backfill.
 
