@@ -23,7 +23,7 @@ def main() -> int:
             "Starting Garmin activity download (days_back=%d, output=%s, targets=%s)",
             config.days_back,
             config.output_dir,
-            ", ".join(f"{t.format}->{t.folder}" for t in config.download_targets),
+            ", ".join(f"{t.format}->{t.path}" for t in config.download_targets),
         )
 
         garmin = authenticate(

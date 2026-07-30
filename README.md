@@ -92,34 +92,36 @@ The pod runs as UID/GID 1000 via `securityContext`, with `fsGroup` set so the ku
 | `GARMIN_PASSWORD` | none | Garmin Connect account password, used for initial authentication and credential fallback |
 | `DAYS_BACK` | `7` | Number of days of activity history to check on each run |
 | `GARMINTOKENS` | `/app/tokens` | Path where authentication tokens are read from and written to |
-| `OUTPUT_DIR` | `/app/data` | Path where downloaded activity files are saved, in one subfolder per download target |
-| `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of download targets. Each is a format (`FIT`, `GPX`, `TCX`) with an optional `:folder` override |
+| `OUTPUT_DIR` | `/app/data` | Path where downloaded activity files are saved, in one folder per format (with optional subfolder) |
+| `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of download formats. Each is a format (`FIT`, `GPX`, `TCX`) with an optional `:subfolder` nested under that format's folder |
 
 `GARMIN_EMAIL` and `GARMIN_PASSWORD` also support Docker secrets. Set them at `/run/secrets/garmin_email` and `/run/secrets/garmin_password`, and the container reads from those files before falling back to the environment variables.
 
 `DAYS_BACK` must be an integer and every `DOWNLOAD_FORMATS` entry must name one of `FIT`, `GPX`, and `TCX`. Both are validated at startup, and an invalid value fails the run with exit code `2` before any download is attempted.
 
-### Download targets
+### Download formats
 
-A target is a format plus the folder it is saved into. Written bare, a format saves into a folder of the same name, so `DOWNLOAD_FORMATS=FIT,GPX` fills `data/FIT` and `data/GPX`. Add `:folder` to choose the folder name instead:
-
-```bash
-DOWNLOAD_FORMATS=FIT:you@example.com
-```
-
-The same format may appear more than once to fill several folders. This is the way to feed several downstream systems that each delete the files they import — every folder is deduplicated independently, so a system that empties its folder receives the activity again on the next run, while the other folders are left alone:
+A format is a format plus, optionally, a subfolder inside that format's folder. Every path starts with the format, so `data/<FORMAT>/` always holds only that format's files. Written bare, a format saves directly into its own folder, so `DOWNLOAD_FORMATS=FIT,GPX` fills `data/FIT` and `data/GPX`. Add `:subfolder` to nest one level deeper:
 
 ```bash
-DOWNLOAD_FORMATS=FIT:strava-inbox,FIT:archive,GPX
+DOWNLOAD_FORMATS=FIT:folderA
 ```
 
-Each activity is still fetched from Garmin only once per format, no matter how many folders it is written to.
+That writes to `data/FIT/folderA` — never to `data/folderA`.
 
-Folder names must be a single folder name: no `/` or `\`, and neither `.` nor `..`. Format names are case-insensitive and folder names are used exactly as written. Repeating the same format and folder pair is harmless — the duplicate is ignored and the folder is filled once. Two different formats may share one folder, since their file extensions differ.
+The same format may appear more than once to fill several folders, bare and subfoldered entries included. This is the way to feed several downstream systems that each delete the files they import — every folder is deduplicated independently, so a system that empties its folder receives the activity again on the next run, while the other folders are left alone:
+
+```bash
+DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX
+```
+
+That fills `data/FIT`, `data/FIT/strava-inbox`, `data/FIT/archive`, and `data/GPX`. Each activity is still fetched from Garmin only once per format, no matter how many folders it is written to.
+
+Subfolder names must be a single folder name: no `/` or `\`, and neither `.` nor `..`. Nesting is exactly one level below the format folder. Format names are case-insensitive and subfolder names are used exactly as written. Repeating the same format and subfolder pair is harmless — the duplicate is ignored and the folder is filled once. Two formats may reuse the same subfolder name (`GPX:inbox,TCX:inbox`) without interfering, since each lives under its own format folder.
 
 ## Output files
 
-Each activity is saved as `<activityId>.<extension>` inside its target's subfolder, using the numeric Garmin Connect activity ID rather than the activity's date or name:
+Each activity is saved as `<activityId>.<extension>` inside its format's folder, using the numeric Garmin Connect activity ID rather than the activity's date or name. A format's folder is `<OUTPUT_DIR>/<FORMAT>` for a bare format, or `<OUTPUT_DIR>/<FORMAT>/<subfolder>` when a subfolder is given, so a format's files never leave its own folder. With `DOWNLOAD_FORMATS=FIT,GPX,TCX`:
 
 ```
 data/
@@ -128,13 +130,25 @@ data/
 └── TCX/17284419021.tcx
 ```
 
+With subfolders — `DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX:you@example.com`:
+
+```
+data/
+├── FIT
+│   ├── 17284419021.fit
+│   ├── archive/17284419021.fit
+│   └── strava-inbox/17284419021.fit
+└── GPX
+    └── you@example.com/17284419021.gpx
+```
+
 ### Unsafe activity IDs
 
 The activity ID that names each file comes straight from the Garmin Connect API response, so it is validated before it is used to build a path: it must be made up only of ASCII letters and digits. Garmin returns plain numbers today, and letters are accepted so a future ID scheme keeps working without a code change, but anything else — a path separator, a `..` segment, an absolute path — is rejected.
 
 A rejected ID aborts the run with exit code `3` and logs the offending value; no files are written, including for activities later in the same batch. This is not something a normal run can hit. Seeing it means the response did not come from Garmin unmodified, so treat it as a signal to check what sits between the container and `connect.garmin.com` — an intercepting proxy, a DNS or TLS problem, or a tampered-with `garminconnect` install — rather than as a bug to work around.
 
-Deduplication is purely filesystem-based: on each run, an activity is skipped for a target when the file already exists in that target's folder. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
+Deduplication is purely filesystem-based: on each run, an activity is skipped for a format when the file already exists in that format's folder. There is no database or manifest, so renaming, moving, or deleting a file causes the next run to download it again.
 
 The downloader waits one second between downloads to stay clear of Garmin's rate limits. This is not configurable, so the first run of a wide `DAYS_BACK` window across several formats takes a while — expect roughly one second per file. Progress is logged per activity.
 
@@ -166,7 +180,7 @@ docker compose run --rm -it garmin-sync python -m src.setup
 
 On Kubernetes, re-run setup using either approach from [Kubernetes Deployment](#kubernetes-deployment) so the refreshed tokens land back in the PVC.
 
-**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<folder>/<activityId>.<ext>`, where `<folder>` comes from the download target. Files that were renamed or moved — or that live in a folder no longer named in `DOWNLOAD_FORMATS` — are no longer recognized. Restore the original layout, or add the old folder name back as a target, rather than widening `DAYS_BACK`.
+**Activities are downloaded again after a reorganization.** Dedup matches on the exact path `<output_dir>/<FORMAT>[/<subfolder>]/<activityId>.<ext>`, built from the download format. Files that were renamed or moved — or that live in a folder no longer named in `DOWNLOAD_FORMATS` — are no longer recognized. Restore the original layout, or add the old subfolder back as a format, rather than widening `DAYS_BACK`.
 
 **Older activities are never fetched.** `DAYS_BACK` bounds every run, so activities older than that window are never considered. Run once with a larger value to backfill.
 

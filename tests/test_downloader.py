@@ -211,8 +211,8 @@ class TestActivityIdValidation:
         assert (tmp_path / "GPX" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
 
 
-class TestCustomFolderTargets:
-    def test_saves_format_to_custom_folder(self, mock_garmin, tmp_path):
+class TestCustomSubfolderTargets:
+    def test_saves_format_to_custom_subfolder_under_the_format_folder(self, mock_garmin, tmp_path):
         count = download_new_activities(
             mock_garmin,
             str(tmp_path),
@@ -221,12 +221,31 @@ class TestCustomFolderTargets:
             download_delay=0,
         )
 
+        activity_id = SAMPLE_ACTIVITY["activityId"]
         assert count == 1
-        saved = tmp_path / "user@example.com" / f"{SAMPLE_ACTIVITY['activityId']}.gpx"
-        assert saved.read_bytes() == SAMPLE_GPX
-        assert not (tmp_path / "GPX").exists()
+        assert (tmp_path / "GPX" / "user@example.com" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
+        # Nothing lands at the root, nor directly in the format folder.
+        assert not (tmp_path / "user@example.com").exists()
+        assert not (tmp_path / "GPX" / f"{activity_id}.gpx").exists()
 
-    def test_same_format_to_multiple_folders_downloads_once(self, mock_garmin, tmp_path):
+    def test_bare_and_subfoldered_same_format_download_once(self, mock_garmin, tmp_path):
+        mock_garmin.download_activity.return_value = SAMPLE_FIT_ZIP
+
+        count = download_new_activities(
+            mock_garmin,
+            str(tmp_path),
+            targets=[DownloadTarget("FIT"), DownloadTarget("FIT", "folderA")],
+            days_back=7,
+            download_delay=0,
+        )
+
+        activity_id = SAMPLE_ACTIVITY["activityId"]
+        assert count == 2
+        assert mock_garmin.download_activity.call_count == 1
+        assert (tmp_path / "FIT" / f"{activity_id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
+        assert (tmp_path / "FIT" / "folderA" / f"{activity_id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
+
+    def test_same_format_to_multiple_subfolders_downloads_once(self, mock_garmin, tmp_path):
         count = download_new_activities(
             mock_garmin,
             str(tmp_path),
@@ -238,10 +257,10 @@ class TestCustomFolderTargets:
         activity_id = SAMPLE_ACTIVITY["activityId"]
         assert count == 2
         assert mock_garmin.download_activity.call_count == 1
-        assert (tmp_path / "inbox-a" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
-        assert (tmp_path / "inbox-b" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "GPX" / "inbox-a" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "GPX" / "inbox-b" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
 
-    def test_fit_extracted_once_and_written_to_each_folder(self, mock_garmin, tmp_path):
+    def test_fit_extracted_once_and_written_to_each_subfolder(self, mock_garmin, tmp_path):
         mock_garmin.download_activity.return_value = SAMPLE_FIT_ZIP
 
         count = download_new_activities(
@@ -255,14 +274,14 @@ class TestCustomFolderTargets:
         activity_id = SAMPLE_ACTIVITY["activityId"]
         assert count == 2
         assert mock_garmin.download_activity.call_count == 1
-        assert (tmp_path / "system-one" / f"{activity_id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
-        assert (tmp_path / "system-two" / f"{activity_id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
+        assert (tmp_path / "FIT" / "system-one" / f"{activity_id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
+        assert (tmp_path / "FIT" / "system-two" / f"{activity_id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
 
-    def test_refills_only_the_folder_that_was_emptied(self, mock_garmin, tmp_path):
+    def test_refills_only_the_subfolder_that_was_emptied(self, mock_garmin, tmp_path):
         """A consumer that deletes files on import gets them again; the other folder is untouched."""
         activity_id = SAMPLE_ACTIVITY["activityId"]
-        (tmp_path / "keeps-files").mkdir()
-        (tmp_path / "keeps-files" / f"{activity_id}.gpx").write_bytes(b"existing")
+        (tmp_path / "GPX" / "keeps-files").mkdir(parents=True)
+        (tmp_path / "GPX" / "keeps-files" / f"{activity_id}.gpx").write_bytes(b"existing")
 
         count = download_new_activities(
             mock_garmin,
@@ -274,10 +293,10 @@ class TestCustomFolderTargets:
 
         assert count == 1
         assert mock_garmin.download_activity.call_count == 1
-        assert (tmp_path / "keeps-files" / f"{activity_id}.gpx").read_bytes() == b"existing"
-        assert (tmp_path / "deletes-on-import" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "GPX" / "keeps-files" / f"{activity_id}.gpx").read_bytes() == b"existing"
+        assert (tmp_path / "GPX" / "deletes-on-import" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
 
-    def test_failed_fit_extraction_writes_to_no_folder(self, mock_garmin, tmp_path):
+    def test_failed_fit_extraction_writes_to_no_subfolder(self, mock_garmin, tmp_path):
         mock_garmin.download_activity.return_value = SAMPLE_EMPTY_ZIP
 
         count = download_new_activities(
@@ -290,10 +309,12 @@ class TestCustomFolderTargets:
 
         activity_id = SAMPLE_ACTIVITY["activityId"]
         assert count == 0
-        assert not (tmp_path / "system-one" / f"{activity_id}.fit").exists()
-        assert not (tmp_path / "system-two" / f"{activity_id}.fit").exists()
+        assert not (tmp_path / "FIT" / "system-one" / f"{activity_id}.fit").exists()
+        assert not (tmp_path / "FIT" / "system-two" / f"{activity_id}.fit").exists()
 
-    def test_mixed_formats_share_one_folder(self, mock_garmin, tmp_path):
+    def test_same_subfolder_name_stays_separate_per_format(self, mock_garmin, tmp_path):
+        """A shared subfolder name never mixes formats: each format keeps its own tree."""
+
         def fake_download(activity_id, dl_fmt):
             return SAMPLE_GPX if dl_fmt == mock_garmin.ActivityDownloadFormat.GPX else SAMPLE_TCX
 
@@ -309,8 +330,10 @@ class TestCustomFolderTargets:
 
         activity_id = SAMPLE_ACTIVITY["activityId"]
         assert count == 2
-        assert (tmp_path / "shared" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
-        assert (tmp_path / "shared" / f"{activity_id}.tcx").read_bytes() == SAMPLE_TCX
+        assert (tmp_path / "GPX" / "shared" / f"{activity_id}.gpx").read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "TCX" / "shared" / f"{activity_id}.tcx").read_bytes() == SAMPLE_TCX
+        assert not (tmp_path / "shared").exists()
+        assert list((tmp_path / "GPX" / "shared").glob("*.tcx")) == []
 
     def test_defaults_to_fit_when_no_targets_given(self, mock_garmin, tmp_path):
         mock_garmin.download_activity.return_value = SAMPLE_FIT_ZIP
