@@ -13,6 +13,11 @@ from src.config import DownloadTarget
 
 logger = logging.getLogger(__name__)
 
+
+class UnsafeActivityIdError(ValueError):
+    """Raised when a Garmin activity id is not safe to use in an output path."""
+
+
 FORMAT_SPECS = {
     "FIT": {
         "dl_fmt": Garmin.ActivityDownloadFormat.ORIGINAL,
@@ -30,6 +35,20 @@ FORMAT_SPECS = {
         "zipped": False,
     },
 }
+
+
+def _is_safe_activity_id(activity_id: object) -> bool:
+    """Check that an activity id is a plain run of ASCII letters and digits.
+
+    The id comes from the remote Garmin response and is interpolated into the
+    output filename, so anything outside that set could escape `output_dir` --
+    either through `..` segments or through an absolute path, which
+    `os.path.join` would let override the preceding components entirely. Garmin
+    currently returns numbers, but letters are accepted so a future id scheme
+    does not need a code change to keep working.
+    """
+    text = str(activity_id)
+    return text.isascii() and text.isalnum()
 
 
 def _normalize_targets(targets: list[DownloadTarget | str] | None) -> list[DownloadTarget]:
@@ -70,6 +89,10 @@ def download_new_activities(
 
     Returns:
         Number of new activity files downloaded.
+
+    Raises:
+        UnsafeActivityIdError: If Garmin returns an activity id that is not
+            alphanumeric, which could otherwise escape `output_dir`.
     """
     targets = _normalize_targets(targets)
 
@@ -93,6 +116,12 @@ def download_new_activities(
     for activity in activities:
         activity_id = activity["activityId"]
         activity_name = activity.get("activityName", "Unknown")
+
+        if not _is_safe_activity_id(activity_id):
+            raise UnsafeActivityIdError(
+                f"Garmin returned a non-alphanumeric activity id {activity_id!r}; "
+                f"refusing to build an output path from it"
+            )
 
         for fmt, folders in folders_by_format.items():
             spec = FORMAT_SPECS[fmt]

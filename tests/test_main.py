@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from src.auth import AuthenticationError
 from src.config import DownloadTarget
+from src.downloader import UnsafeActivityIdError
 from src.main import main
 
 
@@ -52,6 +53,18 @@ class TestMain:
         result = main()
 
         assert result == 2
+
+    @patch("src.main.download_new_activities")
+    @patch("src.main.authenticate")
+    @patch("src.main.load_config")
+    def test_exits_three_on_unsafe_activity_id(self, mock_config, mock_auth, mock_download):
+        mock_config.return_value = MagicMock()
+        mock_auth.return_value = MagicMock()
+        mock_download.side_effect = UnsafeActivityIdError("non-alphanumeric activity id '../escape'")
+
+        result = main()
+
+        assert result == 3
 
     @patch("src.main.download_new_activities", return_value=0)
     @patch("src.main.authenticate")

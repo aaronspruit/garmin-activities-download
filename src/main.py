@@ -5,7 +5,7 @@ import sys
 
 from src.auth import AuthenticationError, authenticate
 from src.config import load_config
-from src.downloader import download_new_activities
+from src.downloader import UnsafeActivityIdError, download_new_activities
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +45,10 @@ def main() -> int:
     except AuthenticationError as e:
         logger.error("Authentication failed: %s", e)
         return 1
+
+    except UnsafeActivityIdError as e:
+        logger.error("Unsafe activity id in Garmin response: %s", e)
+        return 3
 
     except Exception as e:
         logger.error("Download failed: %s", e, exc_info=True)
