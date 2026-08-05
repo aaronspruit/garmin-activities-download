@@ -15,8 +15,27 @@
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": { "installZsh": true },
     "ghcr.io/devcontainers/features/git:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Claude Code ships as an npm package; without a node runtime already
+    // present its feature bootstraps Node 18 from NodeSource, so pin LTS here
+    // instead. The claude-code feature declares installsAfter node, so the
+    // ordering is handled for us.
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
+    // Installs the `claude` CLI globally and pulls in the anthropic.claude-code
+    // VS Code extension via its own feature metadata.
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
   },
+  // Share the host's Claude Code home so login credentials, personal skills
+  // (~/.claude/skills), agents and settings survive container rebuilds instead
+  // of being recreated in a throwaway container layer. updateRemoteUserUID
+  // remaps appuser to the host UID, so the bind mount stays writable.
+  // ~/.agents is mounted too: several entries in ~/.claude/skills are symlinks
+  // to ~/.agents/skills/<name>, which dangle (and so load no skill) unless the
+  // link target is present at the same path inside the container.
+  "mounts": [
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/home/appuser/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents,target=/home/appuser/.agents,type=bind,consistency=cached"
+  ],
   // The image only installs requirements.txt; dev tooling (pytest, ruff, ...)
   // must be added at create time. --user because appuser cannot write to the
   // system site-packages.
@@ -29,7 +48,7 @@
   },
   "customizations": {
     "vscode": {
-      "extensions": ["ms-python.python", "charliermarsh.ruff"],
+      "extensions": ["ms-python.python", "charliermarsh.ruff", "anthropic.claude-code"],
       "settings": {
         "python.testing.pytestEnabled": true,
         "python.testing.pytestArgs": ["tests"],
