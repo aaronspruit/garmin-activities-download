@@ -6,7 +6,7 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
-    reviewers:
+    assignees:
       - aaronspruit
 
   - package-ecosystem: docker
@@ -15,7 +15,7 @@ updates:
       interval: weekly
     commit-message:
       prefix: build
-    reviewers:
+    assignees:
       - aaronspruit
 
   - package-ecosystem: pip
@@ -33,5 +33,5 @@ updates:
         update-types:
           - minor
           - patch
-    reviewers:
+    assignees:
       - aaronspruit
