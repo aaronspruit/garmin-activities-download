@@ -27,6 +27,8 @@ docker build -t garmin-activities-download:test .
 
 Runs against Python 3.14 in CI (matching the Dockerfile `FROM python:3.14-slim`); project requires >= 3.12. Ruff line length is 120.
 
+The Dockerfile is multi-stage: `builder` installs [requirements.txt](requirements.txt) into `/opt/venv`, `runtime` (the default target, so the plain `docker build` above) copies that venv in and then deletes `pip`, `ensurepip` and other build-time parts of the base image, and `dev` keeps `pip` for the dev container (`"target": "dev"` in [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json)). Removing `pip` is what keeps the Trivy job green: pip vendors its own dependencies and, since 26.2, ships `pip/_vendor/bom.cdx.json` declaring them, so a scanner reads them as installed packages and flags their CVEs (msgpack, setuptools) even though nothing in `src/` imports them. Anything added to the runtime stage must not reintroduce `pip`.
+
 ## Architecture
 
 A **run-once** container: it authenticates, downloads any new Garmin Connect activities, then exits (exit code 0 = success, 1 = auth failure, 3 = unsafe activity ID from Garmin, 2 = other). This design targets a Kubernetes CronJob or host crontab, not a long-running service. There is no server or scheduler in the code — scheduling lives entirely in the deployment (crontab / [k8s/cronjob.yaml](k8s/cronjob.yaml)).

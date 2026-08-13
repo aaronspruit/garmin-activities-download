@@ -1,10 +1,13 @@
 {
   "name": "garmin-activities-download",
   // Reuse the project's Dockerfile so the dev environment matches the shipped
-  // image (same python:3.14-slim base and non-root appuser).
+  // image (same python:3.14-slim base and non-root appuser). The `dev` stage
+  // rather than the default `runtime` one: runtime strips pip out, which
+  // postCreateCommand below needs.
   "build": {
     "dockerfile": "../Dockerfile",
-    "context": ".."
+    "context": "..",
+    "target": "dev"
   },
   // Run as the image's existing non-root user. The Dockerfile fixes appuser at
   // UID/GID 1000; on Linux updateRemoteUserUID:true remaps that to the host
