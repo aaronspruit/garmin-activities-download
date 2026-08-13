@@ -215,7 +215,7 @@ This repository includes a [Dev Container](https://containers.dev/) at [.devcont
 
 The first build takes some minutes. The environment is ready when `postCreateCommand` completes the installation of the dependencies.
 
-The dev container is built from the project [Dockerfile](Dockerfile). Development therefore uses the same `python:3.14-slim` base image and the same non-root `appuser` as the released image. This base image is minimal, so [Features](https://containers.dev/features) add `git`, the GitHub CLI, and a configured shell.
+The dev container is built from the project [Dockerfile](Dockerfile), from its `dev` stage. Development therefore uses the same `python:3.14-slim` base image and the same non-root `appuser` as the released image. The `dev` stage keeps `pip`, which the released `runtime` stage removes, so `postCreateCommand` can install the development dependencies. This base image is minimal, so [Features](https://containers.dev/features) add `git`, the GitHub CLI, and a configured shell.
 
 The workspace mounts at `/workspaces/garmin-activities-download`, not at `/app` as in the image. Therefore `OUTPUT_DIR` and `GARMINTOKENS` point to the `./data` and `./tokens` folders in the repository. An interactive `python -m src.setup` or `python -m src.main` in the container reads and writes these directories.
 
@@ -251,13 +251,15 @@ Build the container image locally:
 docker build -t garmin-activities-download:test .
 ```
 
+The [Dockerfile](Dockerfile) has three stages. `builder` installs [requirements.txt](requirements.txt) into a virtual environment at `/opt/venv`. `runtime` is the default target and the shipped image: it copies that environment in and deletes the build-time parts of the base image, `pip` and `ensurepip` above all. Those two bundle their own vendored dependency set, which an image scanner reports as installed packages even though nothing in `src/` imports them. `dev` is the dev container target described above.
+
 ## CI/CD
 
 The [.github/workflows/ci.yml](.github/workflows/ci.yml) workflow runs on pushes and pull requests to `main`, and on `v*.*.*` tags. The workflow has five jobs:
 
 * `lint` and `test` run in parallel.
-* `build-push` builds the image.
-* `security-scan` runs a Trivy vulnerability scan (`CRITICAL` and `HIGH`). It uploads the results to GitHub code scanning.
+* `build-push` builds the image and smoke tests it.
+* `security-scan` runs a Trivy vulnerability scan (`CRITICAL` and `HIGH`). It prints the findings to the job log, then repeats the scan to upload the results to GitHub code scanning and to fail the build on anything fixable.
 * `release` publishes a GitHub release.
 
 The event controls how many of these jobs run:

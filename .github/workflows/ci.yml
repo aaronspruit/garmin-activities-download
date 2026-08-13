@@ -86,10 +86,22 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
+          # Nothing is pushed on a pull request, so security-scan (which smoke
+          # tests the pushed digest) does not run there. Load into the local
+          # daemon instead so the equivalent check below still happens.
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The runtime stage strips pip, ensurepip and other build-time pieces out
+      # of the base image, so prove the interpreter still resolves the venv and
+      # imports the entrypoint. Pull requests only: on every other event the
+      # image is pushed and security-scan runs the same check on the digest.
+      - name: Smoke test the image
+        if: github.event_name == 'pull_request'
+        run: docker run --rm ${{ steps.build.outputs.imageid }} python -c "import src.main"
 
       - name: Generate attestation
         if: github.event_name != 'pull_request'
@@ -115,13 +127,33 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Smoke test the image
+        run: |
+          docker run --rm \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-push.outputs.digest }} \
+            python -c "import src.main"
+
+      # Same filters as the gating scan below, printed to the job log. The SARIF
+      # format writes every finding to the file instead of stdout, so without
+      # this step a failure shows only "exit code 1" with no indication of which
+      # package tripped it. `exit-code: 0` keeps this step informational.
+      - name: Trivy scan (log output)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-push.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0'
+
       # Fails the build only on CRITICAL/HIGH vulnerabilities that have a fix
       # available upstream -- i.e. "Debian shipped a patch and this image has
       # not been rebuilt onto it". Unfixed vulns cannot be actioned here, so
       # they must not block a release. `limit-severities-for-sarif` is required
       # for the SARIF upload to honour `severity`; without it the action
       # reports every severity to code scanning regardless of this filter.
-      - uses: aquasecurity/trivy-action@v0.36.0
+      - name: Trivy scan (gate + SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-push.outputs.digest }}
           format: sarif
