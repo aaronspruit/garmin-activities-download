@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass
 
+from src.trackers import TRACKER_CLASSES
+
 VALID_DOWNLOAD_FORMATS = {"FIT", "GPX", "TCX"}
 
 # Characters that would let a subfolder name escape its format folder or confuse the filesystem.
@@ -24,24 +26,17 @@ class DownloadTarget:
 
 @dataclass
 class Config:
-    """Application configuration."""
+    """Application configuration.
 
-    email: str | None
-    password: str | None
-    tokenstore: str
+    Credentials are absent on purpose: each tracker reads its own in
+    `Tracker.from_env`, so adding a tracker does not change this dataclass.
+    """
+
+    trackers: list[str]
+    tokens_dir: str
     output_dir: str
     days_back: int
     download_targets: list[DownloadTarget]
-
-
-def _read_secret(name: str) -> str | None:
-    """Read a value from Docker secret file, falling back to env var."""
-    secret_path = f"/run/secrets/{name.lower()}"
-    try:
-        with open(secret_path) as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return os.environ.get(name)
 
 
 def _validate_subfolder(folder: str, entry: str) -> str:
@@ -87,12 +82,31 @@ def _parse_targets(raw: str) -> list[DownloadTarget]:
     return targets
 
 
+def _parse_trackers(raw: str) -> list[str]:
+    """Parse and validate a comma-separated TRACKERS value.
+
+    Each entry names a tracker in the registry. Names are case-insensitive and a
+    repeated name collapses into one, keeping first-occurrence order.
+    """
+    entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+    if not entries:
+        raise ValueError("TRACKERS must not be empty")
+
+    trackers: list[str] = []
+    for entry in entries:
+        if entry not in TRACKER_CLASSES:
+            raise ValueError(f"Invalid TRACKERS entry {entry!r}. Valid options: {sorted(TRACKER_CLASSES)}")
+        if entry not in trackers:
+            trackers.append(entry)
+
+    return trackers
+
+
 def load_config() -> Config:
     """Load configuration from environment variables and Docker secrets."""
     return Config(
-        email=_read_secret("GARMIN_EMAIL"),
-        password=_read_secret("GARMIN_PASSWORD"),
-        tokenstore=os.environ.get("GARMINTOKENS", "/app/tokens"),
+        trackers=_parse_trackers(os.environ.get("TRACKERS", "garmin")),
+        tokens_dir=os.environ.get("TOKENS_DIR", "/app/tokens"),
         output_dir=os.environ.get("OUTPUT_DIR", "/app/data"),
         days_back=int(os.environ.get("DAYS_BACK", "7")),
         download_targets=_parse_targets(os.environ.get("DOWNLOAD_FORMATS", "FIT")),

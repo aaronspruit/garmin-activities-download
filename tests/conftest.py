@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import garminconnect
 import pytest
 
+from src.trackers.base import Activity, Tracker
+
 SAMPLE_ACTIVITY = {
     "activityId": 19876543210,
     "activityName": "Morning Run",
@@ -24,6 +26,10 @@ SAMPLE_ACTIVITY_2 = {
     "duration": 3600.0,
     "distance": 25000.0,
 }
+
+# The normalized form the downloader works with, independent of any tracker.
+ACTIVITY = Activity(id="19876543210", name="Morning Run")
+ACTIVITY_2 = Activity(id="19876543211", name="Evening Ride")
 
 SAMPLE_GPX = b"""<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Garmin Connect"
@@ -72,6 +78,87 @@ SAMPLE_FIT_ZIP = _build_zip(
 )
 
 SAMPLE_EMPTY_ZIP = _build_zip({"manifest.json": b"{}"})
+
+
+# --- Wahoo samples --------------------------------------------------------
+
+WAHOO_FIT_CONTENT = b"\x0e\x10WAHOO_FIT_BINARY"
+
+SAMPLE_WAHOO_WORKOUT = {
+    "id": 4471,
+    "name": "Morning Ride",
+    "starts": "2026-08-12T06:00:00.000Z",
+    "minutes": 62,
+    "workout_summary": {
+        "distance_accum": "25000.0",
+        "file": {"url": "https://cdn.wahooligan.com/workouts/4471.fit"},
+    },
+}
+
+# A planned or in-progress workout: no recorded file, so nothing to download.
+SAMPLE_WAHOO_WORKOUT_NO_FILE = {
+    "id": 4472,
+    "name": "Planned Ride",
+    "starts": "2026-08-12T07:00:00.000Z",
+    "minutes": 0,
+}
+
+SAMPLE_WAHOO_TOKENS = {
+    "access_token": "saved-access-token",
+    "refresh_token": "saved-refresh-token",
+    "expires_at": 0,  # Expired, so a refresh is due.
+}
+
+SAMPLE_WAHOO_TOKEN_RESPONSE = {
+    "access_token": "rotated-access-token",
+    "refresh_token": "rotated-refresh-token",
+    "expires_in": 7200,
+}
+
+
+# --- Tracker fixtures -----------------------------------------------------
+
+
+class FakeTracker(Tracker):
+    """A concrete tracker whose network calls are mocks.
+
+    Deliberately a real `Tracker` subclass rather than `MagicMock(spec=Tracker)`:
+    it keeps the downloader tests honest about the interface, and `name` and
+    `supported_formats` are bare annotations on the ABC, so a spec'd mock would
+    not carry them.
+    """
+
+    name = "fake"
+    supported_formats = frozenset({"FIT", "GPX", "TCX"})
+
+    def __init__(self, activities=None, data=SAMPLE_GPX):
+        # Instance attributes shadow the methods below, so tests can assert on
+        # call counts and arguments exactly as they would with a MagicMock.
+        self.list_activities = MagicMock(return_value=list(activities if activities is not None else [ACTIVITY]))
+        self.download = MagicMock(return_value=data)
+
+    @classmethod
+    def from_env(cls, tokens_dir):
+        return cls()
+
+    def authenticate(self):
+        pass
+
+    def list_activities(self, start_date, end_date):  # pragma: no cover - replaced per instance
+        raise NotImplementedError
+
+    def download(self, activity, fmt):  # pragma: no cover - replaced per instance
+        raise NotImplementedError
+
+    @classmethod
+    def interactive_setup(cls, tokens_dir):  # pragma: no cover - not used in tests
+        raise NotImplementedError
+
+
+@pytest.fixture
+def mock_tracker():
+    """Tracker mock with default happy-path responses."""
+    return FakeTracker()
 
 
 @pytest.fixture
