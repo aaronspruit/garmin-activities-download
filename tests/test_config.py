@@ -61,6 +61,27 @@ class TestLoadConfig:
             load_config()
 
 
+class TestStateDir:
+    def test_defaults_to_a_hidden_folder_below_the_output_dir(self, monkeypatch):
+        monkeypatch.delenv("STATE_DIR", raising=False)
+        monkeypatch.setenv("OUTPUT_DIR", "/custom/output")
+
+        assert load_config().state_dir == "/custom/output/.state"
+
+    def test_state_dir_overrides_the_default(self, monkeypatch):
+        monkeypatch.setenv("OUTPUT_DIR", "/custom/output")
+        monkeypatch.setenv("STATE_DIR", "/var/lib/activities/state")
+
+        assert load_config().state_dir == "/var/lib/activities/state"
+
+    def test_empty_state_dir_falls_back_to_the_default(self, monkeypatch):
+        """An unset variable in compose arrives as "", which must not become the CWD."""
+        monkeypatch.setenv("OUTPUT_DIR", "/custom/output")
+        monkeypatch.setenv("STATE_DIR", "")
+
+        assert load_config().state_dir == "/custom/output/.state"
+
+
 class TestParseTrackers:
     def test_defaults_to_garmin(self, monkeypatch):
         monkeypatch.delenv("TRACKERS", raising=False)

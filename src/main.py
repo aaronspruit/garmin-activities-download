@@ -36,6 +36,7 @@ def _run_tracker(name: str, config) -> tuple[int, int]:
         count = download_new_activities(
             tracker,
             output_dir=config.output_dir,
+            state_dir=config.state_dir,
             days_back=config.days_back,
             targets=config.download_targets,
         )
@@ -63,10 +64,11 @@ def main() -> int:
         return 2
 
     logger.info(
-        "Starting activity download (trackers=%s, days_back=%d, output=%s, targets=%s)",
+        "Starting activity download (trackers=%s, days_back=%d, output=%s, state=%s, targets=%s)",
         ", ".join(config.trackers),
         config.days_back,
         config.output_dir,
+        config.state_dir,
         ", ".join(f"{t.format}->{t.path}" for t in config.download_targets),
     )
 

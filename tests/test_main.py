@@ -14,6 +14,7 @@ def _config(trackers=("garmin",)):
         trackers=list(trackers),
         tokens_dir="/tmp/tokens",
         output_dir="/tmp/data",
+        state_dir="/tmp/data/.state",
         days_back=7,
         download_targets=[DownloadTarget("FIT")],
     )
@@ -41,6 +42,7 @@ class TestMain:
         mock_download.assert_called_once_with(
             tracker,
             output_dir="/tmp/data",
+            state_dir="/tmp/data/.state",
             days_back=7,
             targets=[DownloadTarget("FIT")],
         )

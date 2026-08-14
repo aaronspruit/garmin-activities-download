@@ -11,6 +11,8 @@ The `TRACKERS` variable selects the trackers. Each tracker keeps its own tokens 
 
 The authentication tokens stay on disk between runs. Each tracker needs an interactive setup one time. Each scheduled run after that uses the saved tokens with no user input. The container refreshes the tokens and saves them again.
 
+The container writes a marker file for each activity file that it downloads. It keeps these markers in a state folder, apart from the activity files. On each run, the container downloads only the activities that have no marker. Therefore an application can read an activity file and then delete it. The container does not download that file again. For more information, read [Output files](#output-files).
+
 ## Quick Start (Docker Compose)
 
 1. Copy the example environment file:
@@ -101,6 +103,7 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 | `DAYS_BACK` | `7` | Number of past days of activities that each run downloads |
 | `TOKENS_DIR` | `/app/tokens` | Path where the container reads and writes the authentication tokens. Each tracker uses its own folder below this path |
 | `OUTPUT_DIR` | `/app/data` | Path where the container saves the activity files, in one folder for each format |
+| `STATE_DIR` | `<OUTPUT_DIR>/.state` | Path where the container writes the deduplication markers. One empty marker for each activity file |
 | `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of formats. Each entry is `FIT`, `GPX`, or `TCX`, with an optional `:subfolder` |
 
 Each tracker has its own credential variables. Read [Trackers](#trackers) for these.
@@ -182,7 +185,7 @@ DOWNLOAD_FORMATS=FIT:folderA
 
 This entry writes to `data/FIT/folderA`. It never writes to `data/folderA`.
 
-You can write the same format more than once to fill more than one folder. Bare entries and subfolder entries are both permitted. Use this method to feed several downstream systems that delete the files after import. The container deduplicates each folder independently. A system that empties its folder gets the activity again on the next run, and the other folders do not change.
+You can write the same format more than once to fill more than one folder. Bare entries and subfolder entries are both permitted. Use this method to feed several downstream systems that delete the files after import. The container deduplicates each folder independently, with one marker for each file. A system that empties its folder does not get the same activity again, and the other folders do not change.
 
 ```bash
 DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX
@@ -231,7 +234,20 @@ data/
     └── you@example.com/garmin-17284419021.gpx
 ```
 
-Deduplication uses only the filesystem. On each run, if the file is already in the folder of that format, the container skips that activity. There is no database and no manifest. If you rename, move, or delete a file, the next run downloads it again.
+Deduplication uses only the filesystem. There is no database and no manifest. For each activity file, the container writes an empty marker file with the same name in the state folder. Before each download, the container looks for the marker. If the marker is there, the container skips that activity.
+
+The state folder is `<OUTPUT_DIR>/.state` by default. It holds the same folder structure as the data folder. If an application reads `<OUTPUT_DIR>` and all its subfolders, set `STATE_DIR` to a path outside the data folder.
+
+```
+data/
+├── .state
+│   └── FIT/garmin-17284419021.fit
+└── FIT/garmin-17284419021.fit
+```
+
+The marker makes the activity file itself removable. An application can read a file and then delete it, and the container does not download that file again. Deduplication that reads the activity file instead downloads every activity in the `DAYS_BACK` window again on each run.
+
+If the activity file is in its folder but the marker is absent, the container skips that activity and writes the marker. Therefore an upgrade from an earlier version does not download the existing files again. To download a file again, delete its marker. Read [Troubleshooting](#troubleshooting).
 
 The downloader waits one second between downloads to stay below the rate limits of the tracker. This delay is not configurable. If `DAYS_BACK` is large and there are several formats, the first run is slow. Expect approximately one second for each file. The container logs the progress for each activity.
 
@@ -284,7 +300,25 @@ On Kubernetes, run the setup again with one of the procedures in [Kubernetes Dep
 
 Run `python -m src.setup wahoo` again to get a new token set. If the token limit is the cause, first send `DELETE https://api.wahooligan.com/v1/permissions`.
 
-**The container downloads activities again after a reorganization.** Deduplication matches the exact path `<output_dir>/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`. The container does not recognize files that you renamed or moved. It also does not recognize files in a folder that `DOWNLOAD_FORMATS` no longer names. Restore the initial layout, or add the old subfolder to `DOWNLOAD_FORMATS`. Do not increase `DAYS_BACK`.
+**You need an activity file again.** The container does not download an activity file again when the marker of that file is in the state folder. This is correct for an application that deletes each file after it reads the file. If you delete a file by accident, or if a file is damaged, delete its marker. The next run downloads that file again.
+
+The marker has the same path and the same name as the activity file, below the state folder. For the file `data/FIT/garmin-17284419021.fit`, the marker is `data/.state/FIT/garmin-17284419021.fit`.
+
+```bash
+rm data/.state/FIT/garmin-17284419021.fit
+```
+
+To download all the files of one folder again, delete that folder below the state folder:
+
+```bash
+rm -rf data/.state/GPX/you@example.com
+```
+
+CAUTION: If you delete an activity file but keep its marker, the container does not download that file again. Delete the marker also.
+
+The activity must be in the `DAYS_BACK` window. If the activity is older than this window, increase `DAYS_BACK` for one run.
+
+**The container downloads activities again after a reorganization.** Each marker matches one exact path, `<STATE_DIR>/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`. A move of the activity files alone is safe, because the markers do not change. But if you rename a subfolder in `DOWNLOAD_FORMATS`, the new folder has no markers, and the container fills it again. Move the folder below the state folder with the same name, or accept the one large run. Do not increase `DAYS_BACK`.
 
 **The container never downloads the older activities.** `DAYS_BACK` limits every run, so the container ignores all activities that are older than this window. To backfill, run the container one time with a larger value.
 

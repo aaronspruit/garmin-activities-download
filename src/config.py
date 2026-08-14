@@ -10,6 +10,16 @@ VALID_DOWNLOAD_FORMATS = {"FIT", "GPX", "TCX"}
 # Characters that would let a subfolder name escape its format folder or confuse the filesystem.
 _ILLEGAL_FOLDER_CHARS = ("/", "\\", "\0")
 
+# Dedup markers live beside the activity files by default, so the existing data
+# volume carries them with no extra mount. It is hidden so that a consumer
+# listing `output_dir` does not mistake it for a format folder.
+STATE_SUBDIR = ".state"
+
+
+def default_state_dir(output_dir: str) -> str:
+    """Marker directory used when `STATE_DIR` is unset."""
+    return os.path.join(output_dir, STATE_SUBDIR)
+
 
 @dataclass(frozen=True)
 class DownloadTarget:
@@ -35,6 +45,7 @@ class Config:
     trackers: list[str]
     tokens_dir: str
     output_dir: str
+    state_dir: str
     days_back: int
     download_targets: list[DownloadTarget]
 
@@ -104,10 +115,12 @@ def _parse_trackers(raw: str) -> list[str]:
 
 def load_config() -> Config:
     """Load configuration from environment variables and Docker secrets."""
+    output_dir = os.environ.get("OUTPUT_DIR", "/app/data")
     return Config(
         trackers=_parse_trackers(os.environ.get("TRACKERS", "garmin")),
         tokens_dir=os.environ.get("TOKENS_DIR", "/app/tokens"),
-        output_dir=os.environ.get("OUTPUT_DIR", "/app/data"),
+        output_dir=output_dir,
+        state_dir=os.environ.get("STATE_DIR") or default_state_dir(output_dir),
         days_back=int(os.environ.get("DAYS_BACK", "7")),
         download_targets=_parse_targets(os.environ.get("DOWNLOAD_FORMATS", "FIT")),
     )
