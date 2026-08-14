@@ -1,0 +1,140 @@
+# Applies the version tags to an already-built image, when its GitHub release
+# is published.
+#
+# ci.yml builds, scans and attests the image on a `v*.*.*` tag push, but tags
+# it only as `sha-<commit>` and creates the release as a draft. Nothing points
+# at that build by version, and `latest` still points at the previous release,
+# so a deployment tracking `latest` cannot pull a release before its notes
+# exist. This workflow closes that gap from the other end: publishing the
+# release -- the point at which the notes are written -- is what moves the
+# tags.
+#
+# The tags are added to the existing digest with `imagetools create`, not by
+# rebuilding. The digest is therefore the one Trivy scanned and the one the
+# attestation covers, and the attestation stays valid.
+name: Release image tags
+
+on:
+  release:
+    # `published` covers publishing a draft, as a release or a pre-release.
+    # `released` additionally covers converting an existing pre-release into a
+    # release, which fires no `published` event. Publishing a draft as a full
+    # release fires both; the run is idempotent, and the concurrency group
+    # below keeps the two from racing.
+    types: [published, released]
+
+permissions: {}
+
+concurrency:
+  group: release-image-tags-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The digest comes from the image-digest.txt asset ci.yml attached to the
+      # draft, so the tags land on exactly the build that was scanned. If that
+      # asset is gone -- a release cut by hand, or an asset deleted -- fall
+      # back to the `sha-<commit>` tag of the commit the git tag points at.
+      - name: Resolve the built image digest
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$IMAGE_NAME"
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern image-digest.txt --output digest.txt 2>/dev/null; then
+            digest=$(tr -d '[:space:]' < digest.txt)
+          else
+            echo "No image-digest.txt asset on $TAG; falling back to the commit tag."
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+            digest=$(docker buildx imagetools inspect "$image:sha-${sha:0:7}" \
+              --format '{{ .Manifest.Digest }}')
+          fi
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "::error::Could not resolve an image digest for $TAG (got '$digest')"; exit 1 ;;
+          esac
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # A pre-release gets a single `<version>-rc<N>` tag and never `latest`,
+      # with N the first free number -- so publishing v1.2.3 as a pre-release
+      # twice gives 1.2.3-rc1 then 1.2.3-rc2, and an existing tag is never
+      # rewritten to point somewhere else. A full release gets the moving tags.
+      # `{{major}}.{{minor}}`, `{{major}}` and `latest` are only safe to move
+      # for a plain X.Y.Z tag, so a git tag carrying a pre-release or build
+      # suffix takes the exact version and nothing else. `{{major}}` is skipped
+      # for 0.x, where a major bump means nothing.
+      - name: Compute the tags
+        id: tags
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ "$PRERELEASE" = "true" ]; then
+            n=1
+            while [ "$n" -le 50 ] \
+              && docker buildx imagetools inspect "$IMAGE:$version-rc$n" >/dev/null 2>&1; do
+              n=$((n + 1))
+            done
+            if [ "$n" -gt 50 ]; then
+              echo "::error::$version already has 50 release candidate tags"
+              exit 1
+            fi
+            tags="$IMAGE:$version-rc$n"
+          else
+            tags="$IMAGE:$version"
+            if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              major="${version%%.*}"
+              rest="${version#*.}"
+              tags="$tags $IMAGE:$major.${rest%%.*}"
+              [ "$major" = "0" ] || tags="$tags $IMAGE:$major"
+              tags="$tags $IMAGE:latest"
+            else
+              echo "$TAG is not a plain X.Y.Z tag; only tagging $version."
+            fi
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Apply the tags
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euo pipefail
+          args=""
+          for tag in $TAGS; do
+            args="$args --tag $tag"
+          done
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $args "$IMAGE@$DIGEST"
+          {
+            echo "Tagged \`$IMAGE@$DIGEST\` as:"
+            echo
+            for tag in $TAGS; do
+              echo "- \`$tag\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
