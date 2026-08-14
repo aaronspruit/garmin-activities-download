@@ -441,7 +441,7 @@ The [.github/workflows/ci.yml](.github/workflows/ci.yml) workflow runs on pushes
 * `lint` and `test` run in parallel.
 * `build-push` builds the image and smoke tests it.
 * `security-scan` runs a Trivy vulnerability scan (`CRITICAL` and `HIGH`). It prints the findings to the job log, then repeats the scan to upload the results to GitHub code scanning and to fail the build on anything fixable.
-* `release` publishes a GitHub release.
+* `release` creates a draft GitHub release.
 
 The event controls how many of these jobs run:
 
@@ -449,14 +449,45 @@ The event controls how many of these jobs run:
 |-------|---------------|
 | Pull request | `lint`, `test`, and `build-push`. The workflow builds the image but does not push it, so `security-scan` and `release` do not run |
 | Push to `main` | The jobs above. The workflow also pushes the image to GHCR with an attestation, then runs `security-scan` |
-| `v*.*.*` tag | All five jobs, with a published GitHub release at the end |
+| `v*.*.*` tag | All five jobs, with a draft GitHub release at the end |
 
-To make a release, tag the commit and push the tag:
+### Releases
+
+A tag push does not give the image its version tags, and does not move `latest`. A deployment that tracks `latest` would otherwise pull a new release, breaking changes included, before the release notes it needs are written. The image is pushed as `sha-<commit>` only. Scan and attestation run against it, and the job summary prints the exact digest to pull for a test.
+
+The [.github/workflows/release-image-tags.yml](.github/workflows/release-image-tags.yml) workflow adds the version tags later, when you publish the release. It adds them to the digest that was already built and scanned, so nothing is rebuilt and the attestation stays valid.
+
+| Publish the release as | Image tags applied |
+|------------------------|--------------------|
+| Pre-release | `X.Y.Z-rc<N>`, where `N` is the first free number. No `latest` |
+| Release | `X.Y.Z`, `X.Y`, `latest`, and `X` for a major version above 0 |
+
+Converting a pre-release into a release applies the second row to the same digest. A tag with a suffix, such as `v1.2.3-beta.1`, only gets its exact version.
+
+To make a release:
 
 ```bash
 git tag v1.0.0
 git push --tags
 ```
+
+Then replace the `{{RELEASE HIGHLIGHTS}}` placeholder in the draft release and publish it. Publishing is what moves the image tags.
+
+#### Abandoning a tag
+
+The notes cover the range from the last published release to the new tag. A tag that you cut and then abandoned is not the start of that range. If you cut `v0.6.0`, never publish it, and then cut `v0.7.0`, the notes for `v0.7.0` start at the last release you did publish, `v0.5.2`, and include the work that `v0.6.0` was going to ship.
+
+To abandon a tag, delete the tag and the draft release:
+
+```bash
+gh release delete v0.6.0 --yes    # only while it is still a draft
+git push --delete origin v0.6.0
+git tag -d v0.6.0
+```
+
+Delete the draft release too, not only the tag. A draft on its own is harmless to the notes, but it stays in the release list until you remove it. Re-cutting the same version also removes it: the workflow replaces an unpublished draft for the tag it is building.
+
+Do not delete the tag of a release that you published. GitHub changes that release back to a draft, but the image keeps the version tags it was given, including `latest`. The workflow also refuses to build a tag that already has a published release, because its notes are written by hand and must not be rewritten.
 
 ## License
 

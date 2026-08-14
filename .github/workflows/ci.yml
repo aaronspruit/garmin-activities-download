@@ -54,7 +54,6 @@ jobs:
       id-token: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
-      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -67,15 +66,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Deliberately no semver or `latest` tags, not even on a version tag.
+      # `latest` must not move before the release notes it belongs to are
+      # published, or a deployment that tracks `latest` pulls a release --
+      # breaking changes included -- that nobody can read about yet. The
+      # version tags are applied to this same digest later, by
+      # release-image-tags.yml, once the release is published by hand. Until
+      # then the build is reachable only as `sha-<commit>`, which is what
+      # security-scan and the digest asset below refer to.
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
             type=ref,event=branch
             type=ref,event=pr
             type=sha
@@ -102,6 +107,28 @@ jobs:
       - name: Smoke test the image
         if: github.event_name == 'pull_request'
         run: docker run --rm ${{ steps.build.outputs.imageid }} python -c "import src.main"
+
+      # On a version tag the image carries no version tag yet, so print how to
+      # pull it. This is the build to test against before publishing the draft
+      # release that gives it its version tags.
+      - name: Report how to pull the build
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Image"
+            echo
+            echo '```'
+            echo "docker pull $IMAGE@$DIGEST"
+            echo '```'
+            echo
+            echo "Also tagged:"
+            echo
+            for tag in $TAGS; do echo "- \`$tag\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate attestation
         if: github.event_name != 'pull_request'
@@ -176,6 +203,59 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Hands the exact digest that security-scan passed to
+      # release-image-tags.yml, which applies the version tags to it when this
+      # draft is published. An asset rather than a line in the body, because
+      # the body is rewritten by hand before publishing.
+      - name: Record the scanned image digest
+        run: echo '${{ needs.build-push.outputs.digest }}' > image-digest.txt
+
+      # Re-cutting a tag must not quietly rewrite notes that are already out.
+      # A published release for this tag is therefore a hard failure: its notes
+      # were written by hand and, per the release policy, are never edited
+      # afterwards. An unpublished draft for the same tag is the opposite case
+      # -- an abandoned or re-cut version -- and is replaced, so the new draft
+      # gets freshly generated notes rather than an update layered over stale
+      # ones. Any highlights already typed into that draft are lost with it.
+      - name: Replace any unpublished draft for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          case "$draft" in
+            true)  echo "Deleting the existing draft for $TAG."
+                   gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes ;;
+            false) echo "::error::$TAG is already a published release. Cut a new version instead."
+                   exit 1 ;;
+            *)     echo "No existing release for $TAG." ;;
+          esac
+
+      # The notes must cover the range between RELEASES, not between git tags.
+      # Cutting v0.6.0, abandoning it and later cutting v0.6.1 leaves a v0.6.0
+      # tag that GitHub can pick as the comparison base on its own, which drops
+      # everything between v0.5.2 and v0.6.0 from the notes even though it all
+      # ships in the image. Pinning the base to the last published release
+      # keeps abandoned tags out of the decision entirely. Empty is a valid
+      # answer -- no releases yet, or the previous one's tag has since been
+      # deleted -- and hands the choice back to GitHub.
+      - name: Find the last published release
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          if [ -n "$tag" ] \
+            && ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::warning::The last release $tag has no tag; letting GitHub choose the base."
+            tag=""
+          fi
+          echo "Comparison base: ${tag:-<chosen by GitHub>}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       # Deliberately a DRAFT. `generate_release_notes` builds the label-driven
       # "What's Changed" sections (categories in .github/release.yml) and the
       # template is pre-pended above them -- the API appends generated notes to
@@ -183,9 +263,13 @@ jobs:
       # {{RELEASE HIGHLIGHTS}} placeholder in the draft, then publish by hand.
       # A draft notifies nobody and is not the "latest" release, so writing the
       # highlights there is authoring the notes, not editing them after release.
+      # Publishing is also what moves the image tags -- see
+      # .github/workflows/release-image-tags.yml.
       - uses: softprops/action-gh-release@v3
         with:
           body_path: .github/release-notes-template.md
           generate_release_notes: true
+          previous_tag: ${{ steps.previous.outputs.tag }}
           draft: true
           prerelease: ${{ contains(github.ref, '-') }}
+          files: image-digest.txt
