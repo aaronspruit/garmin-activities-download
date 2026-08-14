@@ -1,0 +1,57 @@
+# Drives the "What's Changed" body that `generate_release_notes` builds for a
+# release (see the `release` job in workflows/ci.yml). Each merged PR lands in
+# the FIRST category whose label it carries, so order here is priority order --
+# breaking changes and security sit above the routine work.
+#
+# Every PR is required to carry exactly one `changelog:` label; that is enforced
+# by workflows/pr-label-validation.yml, because an unlabelled PR would otherwise
+# fall through to "Other Changes" with no indication anything was miscategorised.
+changelog:
+  # `changelog:skip` still satisfies the "exactly one label" rule but keeps the
+  # PR out of the notes entirely -- for changes with no user-visible effect.
+  exclude:
+    labels:
+      - changelog:skip
+
+  categories:
+    - title: 🚨 Breaking Changes
+      labels:
+        - changelog:breaking-change
+
+    - title: 🫥 Deprecations
+      labels:
+        - changelog:deprecated
+
+    - title: 🔒 Security
+      labels:
+        - changelog:security
+
+    - title: 🚀 Features
+      labels:
+        - changelog:feature
+
+    - title: 🌟 Enhancements
+      labels:
+        - changelog:enhancement
+
+    - title: 🐛 Bug Fixes
+      labels:
+        - changelog:bugfix
+
+    - title: 📚 Documentation
+      labels:
+        - changelog:documentation
+
+    - title: 🏗️ Build & CI
+      labels:
+        - changelog:build
+
+    - title: 📦 Dependencies
+      labels:
+        - changelog:dependencies
+
+    # Catch-all. Nothing should reach it while label validation is green, so a
+    # PR appearing here is a signal that one slipped through unlabelled.
+    - title: 🧹 Other Changes
+      labels:
+        - '*'
