@@ -67,4 +67,8 @@ No network or real credentials anywhere. [tests/conftest.py](tests/conftest.py) 
 
 ## CI/CD
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on push/PR to `main` and on `v*.*.*` tags: `lint` + `test` in parallel → `build-push` (publishes to GHCR) → `security-scan` (Trivy, CRITICAL/HIGH) → `release` (only on version tags). Cut a release by pushing a `vX.Y.Z` tag.
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on push/PR to `main` and on `v*.*.*` tags: `lint` + `test` in parallel → `build-push` (publishes to GHCR) → `security-scan` (Trivy, CRITICAL/HIGH) → `release` (only on version tags).
+
+Cut a release by pushing a `vX.Y.Z` tag, then **publish the draft by hand**. The `release` job creates a *draft*, whose body is [.github/release-notes-template.md](.github/release-notes-template.md) followed by GitHub's generated notes (a supplied body is pre-pended to them, not replaced by them). Replace the `{{RELEASE HIGHLIGHTS}}` placeholder in the draft and publish. The draft exists so the highlights are written before anyone is notified — nothing here should ever be edited after publishing.
+
+The generated half is sorted into sections by [.github/release.yml](.github/release.yml), keyed on the `changelog:` label each PR carries. [.github/workflows/pr-label-validation.yml](.github/workflows/pr-label-validation.yml) fails any PR that does not carry exactly one, since a label forgotten at merge time is only noticed when the release is cut. Dependabot self-labels via [.github/dependabot.yml](.github/dependabot.yml). Use `changelog:skip` for a change that should not appear in the notes at all.

@@ -1,11 +1,16 @@
 version: 2
 updates:
+  # Every ecosystem carries `changelog:dependencies` so Dependabot's own PRs
+  # satisfy the "exactly one changelog label" rule enforced by
+  # .github/workflows/pr-label-validation.yml without manual triage.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     commit-message:
       prefix: ci
+    labels:
+      - changelog:dependencies
     assignees:
       - aaronspruit
 
@@ -15,6 +20,8 @@ updates:
       interval: weekly
     commit-message:
       prefix: build
+    labels:
+      - changelog:dependencies
     assignees:
       - aaronspruit
 
@@ -24,6 +31,8 @@ updates:
       interval: weekly
     commit-message:
       prefix: deps
+    labels:
+      - changelog:dependencies
     groups:
       dev-dependencies:
         patterns:

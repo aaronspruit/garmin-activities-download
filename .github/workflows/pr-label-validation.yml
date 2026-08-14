@@ -1,0 +1,35 @@
+name: PR Label Validation
+
+# Requires exactly one `changelog:` label on every PR, so that the release notes
+# generated in ci.yml can sort it into a section (see ../release.yml). Without
+# this the categories silently degrade: a forgotten label does not fail anything
+# at merge time, it just drops the PR into "Other Changes" months later when the
+# release is cut and the context to fix it is gone.
+#
+# `pull_request_target` rather than `pull_request` because the `pull_request`
+# token is read-only on PRs from forks, so labelling a fork PR could never be
+# commented on. It runs the workflow definition from the base branch and never
+# checks out or executes PR code, which is what makes the elevated token safe.
+on:
+  pull_request_target:
+    types: [opened, labeled, unlabeled, synchronize]
+
+permissions: {}
+
+jobs:
+  validate-changelog-label:
+    runs-on: ubuntu-latest
+    permissions:
+      # `add_comment` writes to the PR conversation, which is an issue comment.
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Require PR to have a changelog label
+        uses: mheap/github-action-required-labels@v5.6.0
+        with:
+          mode: exactly
+          count: 1
+          use_regex: true
+          labels: 'changelog:.*'
+          add_comment: true
+          message: 'This PR needs {{errorString}} {{count}} of: {{ provided }}. Found: {{ applied }}.'

@@ -174,8 +174,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
+      # Deliberately a DRAFT. `generate_release_notes` builds the label-driven
+      # "What's Changed" sections (categories in .github/release.yml) and the
+      # template is pre-pended above them -- the API appends generated notes to
+      # a supplied body rather than replacing it. Fill in the
+      # {{RELEASE HIGHLIGHTS}} placeholder in the draft, then publish by hand.
+      # A draft notifies nobody and is not the "latest" release, so writing the
+      # highlights there is authoring the notes, not editing them after release.
       - uses: softprops/action-gh-release@v3
         with:
+          body_path: .github/release-notes-template.md
           generate_release_notes: true
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref, '-') }}
