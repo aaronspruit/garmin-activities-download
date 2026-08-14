@@ -5,10 +5,20 @@ import os
 import time
 from datetime import datetime, timedelta
 
-from src.config import DownloadTarget
+from src.config import DownloadTarget, default_state_dir
 from src.trackers import FORMAT_EXTENSIONS, ActivityDownloadError, Tracker, UnsafeActivityIdError
 
 logger = logging.getLogger(__name__)
+
+
+def _write_marker(path: str) -> None:
+    """Record that a file was downloaded, as an empty file.
+
+    Only its existence is read, so the contents stay free for later use (an
+    attempt count or a last error, for a retry policy).
+    """
+    with open(path, "wb"):
+        pass
 
 
 def _is_safe_activity_id(activity_id: object) -> bool:
@@ -53,6 +63,7 @@ def download_new_activities(
     targets: list[DownloadTarget | str] | None = None,
     days_back: int = 7,
     download_delay: float = 1.0,
+    state_dir: str | None = None,
 ) -> int:
     """Download activity files (one or more format/subfolder targets) not already saved.
 
@@ -63,6 +74,14 @@ def download_new_activities(
     missing it. Files are named `<tracker>-<activityId>.<ext>`, so two trackers
     that hand out the same id do not collide.
 
+    Dedup is driven by an empty marker written under `state_dir`, mirroring the
+    target folder. The consuming application usually deletes the activity file
+    once it has imported it, so the file's own absence cannot mean "not yet
+    downloaded" -- keying off it re-fetched every activity in the `days_back`
+    window on every run. An activity file present without its marker is adopted
+    (the marker is written, nothing is downloaded), so an install that predates
+    the markers does not re-download its whole window once.
+
     Args:
         tracker: Authenticated tracker.
         output_dir: Directory under which the target folders are created.
@@ -71,6 +90,8 @@ def download_new_activities(
             Formats the tracker does not provide are skipped with a warning.
         days_back: Number of days to look back for activities.
         download_delay: Seconds to wait between downloads (rate limit protection).
+        state_dir: Directory holding the dedup markers. Defaults to
+            `<output_dir>/.state`. Delete a marker to download that file again.
 
     Returns:
         Number of new activity files downloaded.
@@ -84,8 +105,11 @@ def download_new_activities(
         logger.warning("Tracker %s provides none of the requested formats; nothing to do", tracker.name)
         return 0
 
+    state_dir = state_dir or default_state_dir(output_dir)
+
     for target in targets:
         os.makedirs(os.path.join(output_dir, target.path), exist_ok=True)
+        os.makedirs(os.path.join(state_dir, target.path), exist_ok=True)
 
     paths_by_format: dict[str, list[str]] = {}
     for target in targets:
@@ -110,11 +134,19 @@ def download_new_activities(
 
         for fmt, folders in paths_by_format.items():
             filename = f"{tracker.name}-{activity.id}.{FORMAT_EXTENSIONS[fmt]}"
-            missing = [
-                os.path.join(output_dir, folder, filename)
-                for folder in folders
-                if not os.path.exists(os.path.join(output_dir, folder, filename))
-            ]
+
+            missing: list[tuple[str, str]] = []
+            for folder in folders:
+                marker = os.path.join(state_dir, folder, filename)
+                if os.path.exists(marker):
+                    continue
+
+                filepath = os.path.join(output_dir, folder, filename)
+                if os.path.exists(filepath):
+                    _write_marker(marker)
+                    continue
+
+                missing.append((filepath, marker))
 
             skipped += len(folders) - len(missing)
             if not missing:
@@ -125,7 +157,7 @@ def download_new_activities(
                 tracker.name,
                 activity.id,
                 fmt,
-                ", ".join(os.path.dirname(path) for path in missing),
+                ", ".join(os.path.dirname(path) for path, _ in missing),
                 activity.name,
             )
             try:
@@ -136,9 +168,13 @@ def download_new_activities(
                     time.sleep(download_delay)
                 continue
 
-            for filepath in missing:
+            # Marker after the file it stands for: a crash in between leaves a
+            # file with no marker, which the next run adopts. The reverse order
+            # would lose the activity for good.
+            for filepath, marker in missing:
                 with open(filepath, "wb") as f:
                     f.write(data)
+                _write_marker(marker)
                 downloaded += 1
 
             if download_delay > 0:

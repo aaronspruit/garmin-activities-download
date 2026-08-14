@@ -294,8 +294,8 @@ class TestCustomSubfolderTargets:
         assert (tmp_path / "GPX" / "inbox-a" / filename).read_bytes() == SAMPLE_GPX
         assert (tmp_path / "GPX" / "inbox-b" / filename).read_bytes() == SAMPLE_GPX
 
-    def test_refills_only_the_subfolder_that_was_emptied(self, mock_tracker, tmp_path):
-        """A consumer that deletes files on import gets them again; the other folder is untouched."""
+    def test_fills_only_the_subfolder_that_has_no_file_yet(self, mock_tracker, tmp_path):
+        """Each folder deduplicates on its own: one already holding the file is left alone."""
         filename = f"fake-{ACTIVITY.id}.gpx"
         (tmp_path / "GPX" / "keeps-files").mkdir(parents=True)
         (tmp_path / "GPX" / "keeps-files" / filename).write_bytes(b"existing")
@@ -355,6 +355,103 @@ class TestCustomSubfolderTargets:
 
         assert count == 1
         assert (tmp_path / "FIT" / f"fake-{ACTIVITY.id}.fit").exists()
+
+
+class TestStateMarkerDedup:
+    """Dedup keys off a marker, not the file, so a consumer may delete what it imported."""
+
+    def test_writes_a_marker_beside_each_downloaded_file(self, mock_tracker, tmp_path):
+        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        marker = tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx"
+        assert marker.exists()
+        assert marker.read_bytes() == b""
+
+    def test_does_not_download_again_after_the_consumer_deleted_the_file(self, mock_tracker, tmp_path):
+        """The reason this feature exists: a deleted file must not be re-fetched every run."""
+        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+        (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").unlink()
+        mock_tracker.download.reset_mock()
+
+        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        assert count == 0
+        mock_tracker.download.assert_not_called()
+        assert not (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").exists()
+
+    def test_deleting_the_marker_downloads_the_file_again(self, mock_tracker, tmp_path):
+        """The documented way to recover a file deleted by accident."""
+        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+        (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").unlink()
+        (tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx").unlink()
+
+        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        assert count == 1
+        assert (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == SAMPLE_GPX
+
+    def test_adopts_an_existing_file_that_has_no_marker(self, mock_tracker, tmp_path):
+        """Upgrading an install from before the markers must not re-download its window."""
+        (tmp_path / "GPX").mkdir()
+        (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").write_bytes(b"downloaded before the upgrade")
+
+        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        assert count == 0
+        mock_tracker.download.assert_not_called()
+        assert (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == b"downloaded before the upgrade"
+        # Adoption is recorded, so deleting that file later does not re-fetch it.
+        assert (tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx").exists()
+
+    def test_marker_is_per_folder(self, mock_tracker, tmp_path):
+        """One sink emptying its folder must not make the container refill another."""
+        targets = [DownloadTarget("GPX", "inbox-a"), DownloadTarget("GPX", "inbox-b")]
+        download_new_activities(mock_tracker, str(tmp_path), targets=targets, days_back=7, download_delay=0)
+
+        filename = f"fake-{ACTIVITY.id}.gpx"
+        assert (tmp_path / ".state" / "GPX" / "inbox-a" / filename).exists()
+        assert (tmp_path / ".state" / "GPX" / "inbox-b" / filename).exists()
+
+        (tmp_path / ".state" / "GPX" / "inbox-a" / filename).unlink()
+        (tmp_path / "GPX" / "inbox-a" / filename).unlink()
+        mock_tracker.download.reset_mock()
+
+        count = download_new_activities(mock_tracker, str(tmp_path), targets=targets, days_back=7, download_delay=0)
+
+        assert count == 1
+        assert mock_tracker.download.call_count == 1
+        assert (tmp_path / "GPX" / "inbox-a" / filename).read_bytes() == SAMPLE_GPX
+
+    def test_no_marker_is_written_when_the_download_fails(self, mock_tracker, tmp_path):
+        mock_tracker.download.side_effect = ActivityDownloadError("no .fit member")
+
+        download_new_activities(mock_tracker, str(tmp_path), targets=["FIT"], days_back=7, download_delay=0)
+
+        assert list((tmp_path / ".state" / "FIT").iterdir()) == []
+
+    def test_honors_a_custom_state_dir(self, mock_tracker, tmp_path):
+        """`STATE_DIR` moves the markers out of a data folder a consumer scans."""
+        output = tmp_path / "data"
+        state = tmp_path / "state"
+
+        download_new_activities(
+            mock_tracker,
+            str(output),
+            targets=["GPX"],
+            days_back=7,
+            download_delay=0,
+            state_dir=str(state),
+        )
+
+        assert (state / "GPX" / f"fake-{ACTIVITY.id}.gpx").exists()
+        assert not (output / ".state").exists()
+
+    def test_state_dir_holds_no_activity_data(self, mock_tracker, tmp_path):
+        """Markers are empty: the activity files themselves stay in the output folder."""
+        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7, download_delay=0)
+
+        markers = list((tmp_path / ".state").rglob("*.gpx"))
+        assert [m.stat().st_size for m in markers] == [0]
 
 
 class TestRateLimitDelay:
