@@ -18,6 +18,18 @@ stringData:
   GARMIN_EMAIL: "your@email.com"
   GARMIN_PASSWORD: "your-password"
 ---
+# Only needed with "wahoo" in TRACKERS. Register an application at the Wahoo
+# developer portal to obtain these, then seed the tokens into the PVC with
+# `python -m src.setup wahoo` from an interactive pod.
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: wahoo-credentials
+# type: Opaque
+# stringData:
+#   WAHOO_CLIENT_ID: "your-client-id"
+#   WAHOO_CLIENT_SECRET: "your-client-secret"
+# ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -76,7 +88,12 @@ spec:
                 seccompProfile:
                   type: RuntimeDefault
               env:
-                - name: GARMINTOKENS
+                # Comma-separated trackers: garmin, wahoo. Each keeps its own
+                # tokens under TOKENS_DIR/<tracker>. One tracker failing does
+                # not stop the others; the exit code reports the worst result.
+                - name: TRACKERS
+                  value: "garmin"
+                - name: TOKENS_DIR
                   value: /app/tokens
                 - name: OUTPUT_DIR
                   value: /app/data
@@ -84,6 +101,7 @@ spec:
                   value: "7"
                 # Comma-separated targets: FIT, GPX, or TCX, each with an optional
                 # :folder override, e.g. "FIT:strava-inbox,FIT:archive,GPX"
+                # A tracker skips formats it cannot supply -- Wahoo is FIT only.
                 - name: DOWNLOAD_FORMATS
                   value: "FIT"
                 - name: GARMIN_EMAIL
@@ -96,6 +114,19 @@ spec:
                     secretKeyRef:
                       name: garmin-credentials
                       key: GARMIN_PASSWORD
+                # Uncomment with "wahoo" in TRACKERS, along with the Secret
+                # above. Wahoo needs these on EVERY run, not just at setup:
+                # they refresh the 2-hour access token.
+                # - name: WAHOO_CLIENT_ID
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: wahoo-credentials
+                #       key: WAHOO_CLIENT_ID
+                # - name: WAHOO_CLIENT_SECRET
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: wahoo-credentials
+                #       key: WAHOO_CLIENT_SECRET
               volumeMounts:
                 - name: token-storage
                   mountPath: /app/tokens

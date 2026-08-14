@@ -47,7 +47,7 @@
   // point interactive `python -m src.main` runs at the in-workspace dirs.
   "remoteEnv": {
     "OUTPUT_DIR": "/workspaces/garmin-activities-download/data",
-    "GARMINTOKENS": "/workspaces/garmin-activities-download/tokens"
+    "TOKENS_DIR": "/workspaces/garmin-activities-download/tokens"
   },
   "customizations": {
     "vscode": {

@@ -1,13 +1,15 @@
 
 # Garmin Activities Download
 
-This container downloads Garmin Connect activities as FIT, GPX, or TCX files. It runs one time, then it exits. You can deploy it with Docker Compose or with a Kubernetes CronJob.
+This container downloads GPS activities as FIT, GPX, or TCX files. It supports more than one tracker: Garmin Connect and Wahoo. It runs one time, then it exits. You can deploy it with Docker Compose or with a Kubernetes CronJob.
 
 ## Overview
 
-The container connects to Garmin Connect and downloads the recent activities. It saves each activity as a FIT, GPX, or TCX file. It authenticates with saved tokens, downloads the new activities, then exits. This run-once design fits a Kubernetes CronJob or a host crontab entry. The container is not a long-running service.
+The container connects to each configured tracker and downloads the recent activities. It saves each activity as a FIT, GPX, or TCX file. It authenticates with saved tokens, downloads the new activities, then exits. This run-once design fits a Kubernetes CronJob or a host crontab entry. The container is not a long-running service.
 
-The authentication tokens stay on disk between runs. The container needs interactive credentials and MFA only for the first setup. Each scheduled run after that uses these tokens with no user input. When the expiry time is near, the container refreshes the tokens and saves them again.
+The `TRACKERS` variable selects the trackers. Each tracker keeps its own tokens and reads its own credentials. If one tracker fails, the other trackers continue. For the list of trackers, read [Trackers](#trackers).
+
+The authentication tokens stay on disk between runs. Each tracker needs an interactive setup one time. Each scheduled run after that uses the saved tokens with no user input. The container refreshes the tokens and saves them again.
 
 ## Quick Start (Docker Compose)
 
@@ -17,15 +19,15 @@ The authentication tokens stay on disk between runs. The container needs interac
    cp .env.example .env
    ```
 
-2. Edit `.env`. Set `GARMIN_EMAIL` and `GARMIN_PASSWORD`.
+2. Edit `.env`. Set `TRACKERS` and the credentials of each tracker. For Garmin, set `GARMIN_EMAIL` and `GARMIN_PASSWORD`.
 
-3. Run the interactive setup one time to authenticate and to answer the MFA challenge:
+3. Run the interactive setup one time for each tracker. This step authenticates and answers the MFA challenge:
 
    ```bash
-   docker compose run --rm -it garmin-sync python -m src.setup
+   docker compose run --rm -it garmin-sync python -m src.setup garmin
    ```
 
-   This command saves the tokens in the `./tokens` volume.
+   This command saves the tokens in the `./tokens` volume, in one folder for each tracker.
 
 4. Run the sync manually:
 
@@ -59,14 +61,16 @@ GID=1001
 
 The [k8s/cronjob.yaml](k8s/cronjob.yaml) manifest defines three objects: a PersistentVolumeClaim for the tokens, a Secret for the credentials, and a CronJob for the schedule.
 
-The tokens must exist in the PVC before the first scheduled run. The container runs with no user input and cannot prompt for MFA. Use one of these two procedures:
+The tokens of each tracker must exist in the PVC before the first scheduled run. The container runs with no user input. It cannot prompt for MFA or open a browser. Use one of these two procedures:
 
-* Run an interactive pod that mounts the same PVC. Then run the setup in that pod:
+* Run an interactive pod that mounts the same PVC. Then run the setup in that pod, one time for each tracker:
 
   ```bash
   kubectl run garmin-setup --rm -it --image=ghcr.io/OWNER/garmin-activities-download:latest \
-    --overrides='{"spec":{"containers":[{"name":"garmin-setup","image":"ghcr.io/OWNER/garmin-activities-download:latest","command":["python","-m","src.setup"],"stdin":true,"tty":true,"volumeMounts":[{"name":"tokens","mountPath":"/app/tokens"}]}],"volumes":[{"name":"tokens","persistentVolumeClaim":{"claimName":"garmin-tokens-pvc"}}]}}'
+    --overrides='{"spec":{"containers":[{"name":"garmin-setup","image":"ghcr.io/OWNER/garmin-activities-download:latest","command":["python","-m","src.setup","garmin"],"stdin":true,"tty":true,"volumeMounts":[{"name":"tokens","mountPath":"/app/tokens"}]}],"volumes":[{"name":"tokens","persistentVolumeClaim":{"claimName":"garmin-tokens-pvc"}}]}}'
   ```
+
+  For Wahoo, replace `garmin` with `wahoo` in the `command` list. The Wahoo setup also needs `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET` in the pod environment.
 
 * Run the setup locally against the `./tokens` directory. Then copy the token files into the PVC with `kubectl cp`, from a temporary pod that mounts the PVC.
 
@@ -76,7 +80,7 @@ When the tokens are in the PVC, apply the manifest:
 kubectl apply -f k8s/cronjob.yaml
 ```
 
-Before you apply the manifest, set `GARMIN_EMAIL` and `GARMIN_PASSWORD` in the Secret. Also set the container image reference. The manifest includes a `hostPath` volume for the output data. The comments give a PVC alternative for clusters with more than one node.
+Before you apply the manifest, set the credentials of each tracker in the Secret. Also set the container image reference. The manifest includes a `hostPath` volume for the output data. The comments give a PVC alternative for clusters with more than one node.
 
 The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value makes the kubelet change the group of the token PVC, so the non-root process can write to it. If your storage needs a different owner, change `runAsUser` and `runAsGroup`.
 
@@ -93,16 +97,78 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 
 | Variable | Default | Description |
 |----------|---------|--------------|
-| `GARMIN_EMAIL` | none | Email of the Garmin Connect account. The container uses it for the first authentication. If the saved tokens fail, the container uses it again |
-| `GARMIN_PASSWORD` | none | Password of the Garmin Connect account. The container uses it for the first authentication. If the saved tokens fail, the container uses it again |
+| `TRACKERS` | `garmin` | Comma-separated list of trackers to download from. Each entry is `garmin` or `wahoo` |
 | `DAYS_BACK` | `7` | Number of past days of activities that each run downloads |
-| `GARMINTOKENS` | `/app/tokens` | Path where the container reads and writes the authentication tokens |
+| `TOKENS_DIR` | `/app/tokens` | Path where the container reads and writes the authentication tokens. Each tracker uses its own folder below this path |
 | `OUTPUT_DIR` | `/app/data` | Path where the container saves the activity files, in one folder for each format |
 | `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of formats. Each entry is `FIT`, `GPX`, or `TCX`, with an optional `:subfolder` |
 
-`GARMIN_EMAIL` and `GARMIN_PASSWORD` also accept Docker secrets. Put the values in `/run/secrets/garmin_email` and `/run/secrets/garmin_password`. The container reads these files first, and the environment variables second.
+Each tracker has its own credential variables. Read [Trackers](#trackers) for these.
 
-`DAYS_BACK` must be an integer. Each `DOWNLOAD_FORMATS` entry must name `FIT`, `GPX`, or `TCX`. The container validates both variables at startup. An invalid value stops the run with exit code `2`, before the first download.
+All credential variables also accept Docker secrets. Put the value in `/run/secrets/<variable name in lower case>`. For example, `GARMIN_EMAIL` reads `/run/secrets/garmin_email`. The container reads these files first, and the environment variables second.
+
+`DAYS_BACK` must be an integer. Each `TRACKERS` entry must name a known tracker. Each `DOWNLOAD_FORMATS` entry must name `FIT`, `GPX`, or `TCX`. The container validates these variables at startup. An invalid value stops the run with exit code `2`, before the first download.
+
+## Trackers
+
+`TRACKERS` selects the trackers of a run. The container runs them in the given order. Names are not case-sensitive, and the container ignores a repeated name.
+
+```dotenv
+TRACKERS=garmin,wahoo
+```
+
+Each tracker downloads only the formats that it supplies. If `DOWNLOAD_FORMATS` asks for a format that a tracker does not supply, that tracker skips the format and writes a warning. The other trackers are not affected.
+
+| Tracker | Formats | Credentials | First setup |
+|---------|---------|-------------|-------------|
+| `garmin` | `FIT`, `GPX`, `TCX` | `GARMIN_EMAIL`, `GARMIN_PASSWORD` (both optional if the tokens are valid) | `python -m src.setup garmin` |
+| `wahoo` | `FIT` | `WAHOO_CLIENT_ID`, `WAHOO_CLIENT_SECRET` (both necessary for every run) | `python -m src.setup wahoo` |
+
+If one tracker fails, the container continues with the other trackers. The exit code reports the most serious failure. Read [Exit codes](#exit-codes).
+
+### Garmin
+
+Set `GARMIN_EMAIL` and `GARMIN_PASSWORD`, then run the setup one time:
+
+```bash
+docker compose run --rm -it garmin-sync python -m src.setup garmin
+```
+
+The setup asks for the email, the password, and the MFA code. It then saves the tokens to `<TOKENS_DIR>/garmin`. The credentials are optional after this step. If the saved tokens fail, the container uses the credentials again.
+
+### Wahoo
+
+Wahoo uses OAuth2. The container cannot open a browser, so the first authentication needs some manual steps.
+
+**Before you start**, do these steps one time:
+
+1. Register an application at the Wahoo developer portal. Make a note of the client ID and the client secret.
+2. Register a redirect URI for the application. It must agree exactly with `WAHOO_REDIRECT_URI`. The default value is `http://localhost`.
+3. Give the application the scopes `user_read`, `workouts_read`, and `offline_data`.
+4. Put the client ID and the client secret in `.env` as `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`.
+
+> [!IMPORTANT]
+> Wahoo needs `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET` for **every** run, not only for the setup. The container uses them to refresh the access token. This is different from Garmin, where the credentials are only a fallback.
+
+Then run the setup:
+
+```bash
+docker compose run --rm -it garmin-sync python -m src.setup wahoo
+```
+
+The setup prints an authorization URL. Do these steps:
+
+1. Open the URL in a browser and approve the access.
+2. The browser goes to `http://localhost` and fails to load the page. This is correct. No program listens at that address.
+3. Copy the value of `code` from the address bar of the browser.
+4. Paste the value at the prompt.
+
+The setup saves the tokens to `<TOKENS_DIR>/wahoo/tokens.json`.
+
+Wahoo gives one activity file for each workout, and it is always a FIT file. Therefore the Wahoo tracker skips `GPX` and `TCX`. A workout with no recorded file, such as a planned workout, is also skipped.
+
+> [!NOTE]
+> From 1 January 2026, Wahoo permits 10 unrevoked access tokens for each user. Each setup run uses one of these. The container refreshes a token only immediately before it reads the API, so a normal run does not waste tokens. If you get a token limit error, send `DELETE https://api.wahooligan.com/v1/permissions` to remove the application access, then run the setup again.
 
 ### Download formats
 
@@ -122,7 +188,9 @@ You can write the same format more than once to fill more than one folder. Bare 
 DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX
 ```
 
-This example fills `data/FIT`, `data/FIT/strava-inbox`, `data/FIT/archive`, and `data/GPX`. The container downloads each activity from Garmin one time for each format, independent of the number of folders.
+This example fills `data/FIT`, `data/FIT/strava-inbox`, `data/FIT/archive`, and `data/GPX`. The container downloads each activity from the tracker one time for each format, independent of the number of folders.
+
+`DOWNLOAD_FORMATS` applies to all trackers. A tracker that cannot supply a format skips it. For example, with `TRACKERS=garmin,wahoo` and `DOWNLOAD_FORMATS=FIT,GPX`, Garmin fills `data/FIT` and `data/GPX`, and Wahoo fills only `data/FIT`.
 
 Subfolder names obey these rules:
 
@@ -134,40 +202,46 @@ Subfolder names obey these rules:
 
 ## Output files
 
-The container saves each activity as `<activityId>.<extension>` inside the format folder. The name is the numeric Garmin Connect activity ID, not the date or the name of the activity. For a bare format, the format folder is `<OUTPUT_DIR>/<FORMAT>`. For a format with a subfolder, the format folder is `<OUTPUT_DIR>/<FORMAT>/<subfolder>`. The files of a format never leave the folder of that format.
+The container saves each activity as `<tracker>-<activityId>.<extension>` inside the format folder. The name is the name of the tracker and the activity ID from that tracker, not the date or the name of the activity. For a bare format, the format folder is `<OUTPUT_DIR>/<FORMAT>`. For a format with a subfolder, the format folder is `<OUTPUT_DIR>/<FORMAT>/<subfolder>`. The files of a format never leave the folder of that format.
 
-This example uses `DOWNLOAD_FORMATS=FIT,GPX,TCX`:
+The tracker name is part of the file name because two trackers can give the same activity ID. Without it, one tracker could write over the file of another tracker, and deduplication could skip a new activity.
+
+This example uses `TRACKERS=garmin,wahoo` and `DOWNLOAD_FORMATS=FIT,GPX,TCX`:
 
 ```
 data/
-├── FIT/17284419021.fit
-├── GPX/17284419021.gpx
-└── TCX/17284419021.tcx
+├── FIT
+│   ├── garmin-17284419021.fit
+│   └── wahoo-4471.fit
+├── GPX/garmin-17284419021.gpx
+└── TCX/garmin-17284419021.tcx
 ```
+
+Wahoo supplies only FIT, so `data/GPX` and `data/TCX` hold Garmin files only.
 
 This example uses subfolders, with `DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX:you@example.com`:
 
 ```
 data/
 ├── FIT
-│   ├── 17284419021.fit
-│   ├── archive/17284419021.fit
-│   └── strava-inbox/17284419021.fit
+│   ├── garmin-17284419021.fit
+│   ├── archive/garmin-17284419021.fit
+│   └── strava-inbox/garmin-17284419021.fit
 └── GPX
-    └── you@example.com/17284419021.gpx
+    └── you@example.com/garmin-17284419021.gpx
 ```
 
 Deduplication uses only the filesystem. On each run, if the file is already in the folder of that format, the container skips that activity. There is no database and no manifest. If you rename, move, or delete a file, the next run downloads it again.
 
-The downloader waits one second between downloads to stay below the Garmin rate limits. This delay is not configurable. If `DAYS_BACK` is large and there are several formats, the first run is slow. Expect approximately one second for each file. The container logs the progress for each activity.
+The downloader waits one second between downloads to stay below the rate limits of the tracker. This delay is not configurable. If `DAYS_BACK` is large and there are several formats, the first run is slow. Expect approximately one second for each file. The container logs the progress for each activity.
 
 ### Unsafe activity IDs
 
-The activity ID that names each file comes directly from the Garmin Connect API response. The container validates the ID before it builds a path from it: the ID must contain only ASCII letters and digits. Garmin returns plain numbers today. The container accepts letters, so a future ID scheme continues to work with no code change. The container rejects all other values, such as a path separator, a `..` segment, or an absolute path.
+The activity ID that names each file comes directly from the API response of the tracker. The container validates the ID before it builds a path from it: the ID must contain only ASCII letters and digits. The trackers return plain numbers today. The container accepts letters, so a future ID scheme continues to work with no code change. The container rejects all other values, such as a path separator, a `..` segment, or an absolute path.
 
-An invalid ID stops the run with exit code `3` and logs the bad value. The container writes no files, also not for the later activities in the same batch. A normal run cannot cause this error. The error shows that the response is not the unmodified Garmin response.
+An invalid ID stops that tracker with exit code `3` and logs the bad value. The container writes no more files for that tracker, also not for the later activities in the same batch. The other trackers continue. A normal run cannot cause this error. The error shows that the response is not the unmodified response of the tracker.
 
-If this error occurs, examine what is between the container and `connect.garmin.com`. The usual causes are an intercepting proxy, a DNS or TLS error, or a modified `garminconnect` installation.
+If this error occurs, examine what is between the container and the API of the tracker. The usual causes are an intercepting proxy, a DNS or TLS error, or a modified client library.
 
 ## Exit codes
 
@@ -176,15 +250,17 @@ The container runs one time and exits. It runs on a schedule with no operator, s
 | Code | Meaning | Action |
 |------|---------|--------|
 | `0` | Success. The container downloaded the new activities, or there was nothing new | None |
-| `1` | Authentication failed, and the credentials did not work | Run the interactive setup again (see below) |
-| `2` | Other error, for example an invalid configuration or a Garmin API error | Read the logs. This error is often temporary and the next scheduled run corrects it |
-| `3` | Garmin returned an activity ID that is not alphanumeric, so the container built no output path | Read the logs. See [Unsafe activity IDs](#unsafe-activity-ids) |
+| `1` | Authentication failed, and the credentials did not work | Run the interactive setup again for the tracker in the log (see below) |
+| `2` | Other error, for example an invalid configuration or a tracker API error | Read the logs. This error is often temporary and the next scheduled run corrects it |
+| `3` | A tracker returned an activity ID that is not alphanumeric, so the container built no output path | Read the logs. See [Unsafe activity IDs](#unsafe-activity-ids) |
 
 Codes `1` and `3` need an alert, because they do not correct themselves.
 
+A failure of one tracker does not stop the other trackers. An expired Wahoo token must not cost a scheduled run its Garmin activities. If more than one tracker fails, the container reports the most serious code, in this sequence: `3`, then `1`, then `2`. Each log line starts with the name of its tracker, so you can find which tracker failed.
+
 ## Troubleshooting
 
-**Authentication fails on a scheduled run (exit code `1`).** Tokens do not usually need manual work. When the expiry time is near, `garminconnect` refreshes them at each login. It then writes the new tokens to the token store. Therefore scheduled runs stay authenticated. Exit code `1` shows that something broke the token store. The usual causes are:
+**Garmin authentication fails on a scheduled run (exit code `1`).** Tokens do not usually need manual work. When the expiry time is near, `garminconnect` refreshes them at each login. It then writes the new tokens to the token store. Therefore scheduled runs stay authenticated. Exit code `1` shows that something broke the token store. The usual causes are:
 
 * A change of the account password.
 * A sign-out that revoked the session.
@@ -194,12 +270,21 @@ Codes `1` and `3` need an alert, because they do not correct themselves.
 The container then uses `GARMIN_EMAIL` and `GARMIN_PASSWORD`. But these credentials cannot answer an MFA challenge with no user input. Run the interactive setup again to get a new token set:
 
 ```bash
-docker compose run --rm -it garmin-sync python -m src.setup
+docker compose run --rm -it garmin-sync python -m src.setup garmin
 ```
 
 On Kubernetes, run the setup again with one of the procedures in [Kubernetes Deployment](#kubernetes-deployment). The new tokens then go into the PVC.
 
-**The container downloads activities again after a reorganization.** Deduplication matches the exact path `<output_dir>/<FORMAT>[/<subfolder>]/<activityId>.<ext>`. The container does not recognize files that you renamed or moved. It also does not recognize files in a folder that `DOWNLOAD_FORMATS` no longer names. Restore the initial layout, or add the old subfolder to `DOWNLOAD_FORMATS`. Do not increase `DAYS_BACK`.
+**Wahoo authentication fails on a scheduled run (exit code `1`).** A Wahoo access token is valid for 2 hours, so a daily run always refreshes it. The refresh token has no expiry time, and the container saves the new one at each refresh. Therefore a daily schedule continues to work with no manual step. Exit code `1` for Wahoo usually shows one of these:
+
+* `WAHOO_CLIENT_ID` or `WAHOO_CLIENT_SECRET` is absent. The container needs both for every run.
+* The token file did not persist between runs, or a different run wrote over it.
+* The user revoked the application access.
+* The account is at the limit of 10 unrevoked access tokens.
+
+Run `python -m src.setup wahoo` again to get a new token set. If the token limit is the cause, first send `DELETE https://api.wahooligan.com/v1/permissions`.
+
+**The container downloads activities again after a reorganization.** Deduplication matches the exact path `<output_dir>/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`. The container does not recognize files that you renamed or moved. It also does not recognize files in a folder that `DOWNLOAD_FORMATS` no longer names. Restore the initial layout, or add the old subfolder to `DOWNLOAD_FORMATS`. Do not increase `DAYS_BACK`.
 
 **The container never downloads the older activities.** `DAYS_BACK` limits every run, so the container ignores all activities that are older than this window. To backfill, run the container one time with a larger value.
 
@@ -217,7 +302,7 @@ The first build takes some minutes. The environment is ready when `postCreateCom
 
 The dev container is built from the project [Dockerfile](Dockerfile), from its `dev` stage. Development therefore uses the same `python:3.14-slim` base image and the same non-root `appuser` as the released image. The `dev` stage keeps `pip`, which the released `runtime` stage removes, so `postCreateCommand` can install the development dependencies. This base image is minimal, so [Features](https://containers.dev/features) add `git`, the GitHub CLI, and a configured shell.
 
-The workspace mounts at `/workspaces/garmin-activities-download`, not at `/app` as in the image. Therefore `OUTPUT_DIR` and `GARMINTOKENS` point to the `./data` and `./tokens` folders in the repository. An interactive `python -m src.setup` or `python -m src.main` in the container reads and writes these directories.
+The workspace mounts at `/workspaces/garmin-activities-download`, not at `/app` as in the image. Therefore `OUTPUT_DIR` and `TOKENS_DIR` point to the `./data` and `./tokens` folders in the repository. An interactive `python -m src.setup <tracker>` or `python -m src.main` in the container reads and writes these directories.
 
 You do not need the `UID` and `GID` values from [File ownership on Linux](#file-ownership-on-linux). On Linux, `updateRemoteUserUID` maps `appuser` to your host user when the container is created. Workspace files that you create keep you as the owner.
 
@@ -252,6 +337,17 @@ docker build -t garmin-activities-download:test .
 ```
 
 The [Dockerfile](Dockerfile) has three stages. `builder` installs [requirements.txt](requirements.txt) into a virtual environment at `/opt/venv`. `runtime` is the default target and the shipped image: it copies that environment in and deletes the build-time parts of the base image, `pip` and `ensurepip` above all. Those two bundle their own vendored dependency set, which an image scanner reports as installed packages even though nothing in `src/` imports them. `dev` is the dev container target described above.
+
+### Add a tracker
+
+A tracker is one module in [src/trackers/](src/trackers/). To add one:
+
+1. Write `src/trackers/<name>.py` with a subclass of `Tracker` from [src/trackers/base.py](src/trackers/base.py). Give it a `name`, a `supported_formats` set, and the five methods: `from_env`, `authenticate`, `list_activities`, `download`, and `interactive_setup`.
+2. Add the class to `_REGISTERED` in [src/trackers/\_\_init\_\_.py](src/trackers/__init__.py).
+3. Add tests as `tests/test_trackers_<name>.py`.
+4. Add a row to the table in [Trackers](#trackers).
+
+No other code changes. `download` must return the final bytes of the file, so a tracker that gets an archive must unpack it. Keep the module free of input and output at import time, because CI imports it as a smoke test.
 
 ## CI/CD
 

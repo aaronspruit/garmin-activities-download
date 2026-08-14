@@ -1,42 +1,36 @@
-"""One-time interactive setup for Garmin Connect authentication.
+"""One-time interactive setup for tracker authentication.
 
-Run this script interactively to authenticate (including MFA if enabled)
-and generate persistent tokens. After setup, the container can run headless.
+Run this script interactively to authenticate a tracker and save persistent
+tokens. After setup, the container can run headless.
 
 Usage:
-    docker compose run --rm -it garmin-sync python -m src.setup
-    kubectl run garmin-setup --rm -it --image=<image> -- python -m src.setup
+    docker compose run --rm -it garmin-sync python -m src.setup garmin
+    docker compose run --rm -it garmin-sync python -m src.setup wahoo
+    kubectl run tracker-setup --rm -it --image=<image> -- python -m src.setup garmin
 """
 
 import os
 import sys
 
-from garminconnect import Garmin
+from src.trackers import TRACKER_CLASSES
 
 
-def setup() -> None:
-    """Interactive authentication setup with MFA support."""
-    tokenstore = os.environ.get("GARMINTOKENS", "/app/tokens")
+def setup(argv: list[str] | None = None) -> None:
+    """Dispatch interactive setup to the tracker named on the command line."""
+    args = sys.argv[1:] if argv is None else argv
+    available = ", ".join(sorted(TRACKER_CLASSES))
 
-    print("Garmin Connect Authentication Setup")
-    print("=" * 40)
-    email = input("Email: ").strip()
-    password = input("Password: ").strip()
-
-    if not email or not password:
-        print("Error: Email and password are required.", file=sys.stderr)
+    if len(args) != 1:
+        print(f"Usage: python -m src.setup <tracker>\nAvailable trackers: {available}", file=sys.stderr)
         sys.exit(1)
 
-    print("\nAuthenticating...")
-    garmin = Garmin(
-        email=email,
-        password=password,
-        prompt_mfa=lambda: input("MFA code: ").strip(),
-    )
-    garmin.login(tokenstore)
+    name = args[0].strip().lower()
+    if name not in TRACKER_CLASSES:
+        print(f"Error: Unknown tracker {name!r}.\nAvailable trackers: {available}", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"\nTokens saved to {tokenstore}")
-    print("You can now run the container in headless mode.")
+    tokens_dir = os.environ.get("TOKENS_DIR", "/app/tokens")
+    TRACKER_CLASSES[name].interactive_setup(tokens_dir)
 
 
 if __name__ == "__main__":
