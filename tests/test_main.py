@@ -9,14 +9,14 @@ from src.main import main
 from src.trackers.base import TrackerAuthError, UnsafeActivityIdError
 
 
-def _config(trackers=("garmin",)):
+def _config(trackers=("garmin",), targets=None):
     return Config(
         trackers=list(trackers),
         tokens_dir="/tmp/tokens",
         output_dir="/tmp/data",
         state_dir="/tmp/data/.state",
         days_back=7,
-        download_targets=[DownloadTarget("FIT")],
+        download_targets={name: targets or [DownloadTarget("FIT")] for name in trackers},
     )
 
 
@@ -95,6 +95,23 @@ class TestMultipleTrackers:
         assert mock_download.call_count == 2
         registry["garmin"].from_env.assert_called_once_with("/tmp/tokens")
         registry["wahoo"].from_env.assert_called_once_with("/tmp/tokens")
+
+    @patch("src.main.download_new_activities", return_value=1)
+    @patch("src.main.load_config")
+    def test_each_tracker_downloads_to_its_own_targets(self, mock_config, mock_download, registry):
+        config = _config(["garmin", "wahoo"])
+        config.download_targets = {
+            "garmin": [DownloadTarget("GPX", "app2"), DownloadTarget("FIT")],
+            "wahoo": [DownloadTarget("FIT")],
+        }
+        mock_config.return_value = config
+
+        main()
+
+        assert [call.kwargs["targets"] for call in mock_download.call_args_list] == [
+            [DownloadTarget("GPX", "app2"), DownloadTarget("FIT")],
+            [DownloadTarget("FIT")],
+        ]
 
     @patch("src.main.download_new_activities", return_value=1)
     @patch("src.main.load_config")

@@ -65,14 +65,15 @@ def download_new_activities(
     download_delay: float = 1.0,
     state_dir: str | None = None,
 ) -> int:
-    """Download activity files (one or more format/subfolder targets) not already saved.
+    """Download activity files to one or more destinations, skipping those already saved.
 
-    Every target lives under its format's folder, so a target is written to
-    `<output_dir>/<FORMAT>` or `<output_dir>/<FORMAT>/<subfolder>` and a folder only
-    ever holds files of one format. A format requested by several targets is fetched
-    from the tracker once per activity and written to each folder that is still
-    missing it. Files are named `<tracker>-<activityId>.<ext>`, so two trackers
-    that hand out the same id do not collide.
+    A target is a format plus the folder that receives it, written to
+    `<output_dir>/<target.path>`. One folder may receive several formats, since a
+    destination usually belongs to a consuming application rather than to a
+    format. A format wanted by several destinations is fetched from the tracker
+    once per activity and written to each folder that is still missing it. Files
+    are named `<tracker>-<activityId>.<ext>`, so two trackers that hand out the
+    same id do not collide, and two formats in one folder do not either.
 
     Dedup is driven by an empty marker written under `state_dir`, mirroring the
     target folder. The consuming application usually deletes the activity file
@@ -86,7 +87,7 @@ def download_new_activities(
         tracker: Authenticated tracker.
         output_dir: Directory under which the target folders are created.
         targets: `DownloadTarget`s, or bare format tokens ("FIT", "GPX", "TCX") that
-            save directly into the format folder. Defaults to FIT into "FIT".
+            save into a folder of the same name. Defaults to FIT into "FIT".
             Formats the tracker does not provide are skipped with a warning.
         days_back: Number of days to look back for activities.
         download_delay: Seconds to wait between downloads (rate limit protection).

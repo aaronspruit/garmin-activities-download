@@ -99,11 +99,17 @@ spec:
                   value: /app/data
                 - name: DAYS_BACK
                   value: "7"
-                # Comma-separated targets: FIT, GPX, or TCX, each with an optional
-                # :folder override, e.g. "FIT:strava-inbox,FIT:archive,GPX"
+                # Comma-separated destinations: "folder=FORMAT[+FORMAT]", or a bare
+                # format for a folder of the same name, e.g.
+                # "FIT, strava-inbox=FIT, GPX/you@example.com=GPX+FIT"
                 # A tracker skips formats it cannot supply -- Wahoo is FIT only.
-                - name: DOWNLOAD_FORMATS
+                - name: DOWNLOAD_TARGETS
                   value: "FIT"
+                # Dedup markers. Defaults to OUTPUT_DIR/.state, so the same PVC
+                # carries them. Set it only if something reads OUTPUT_DIR
+                # recursively and must not see the .state folder.
+                # - name: STATE_DIR
+                #   value: /app/state
                 - name: GARMIN_EMAIL
                   valueFrom:
                     secretKeyRef:

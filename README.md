@@ -104,13 +104,15 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 | `TOKENS_DIR` | `/app/tokens` | Path where the container reads and writes the authentication tokens. Each tracker uses its own folder below this path |
 | `OUTPUT_DIR` | `/app/data` | Path where the container saves the activity files, in one folder for each format |
 | `STATE_DIR` | `<OUTPUT_DIR>/.state` | Path where the container writes the deduplication markers. One empty marker for each activity file |
-| `DOWNLOAD_FORMATS` | `FIT` | Comma-separated list of formats. Each entry is `FIT`, `GPX`, or `TCX`, with an optional `:subfolder` |
+| `DOWNLOAD_TARGETS` | `FIT` | Comma-separated list of destinations. Each entry is `FIT`, `GPX`, or `TCX`, or `folder=FORMAT+FORMAT` |
+| `<TRACKER>_DOWNLOAD_TARGETS` | — | Destinations for one tracker only, for example `GARMIN_DOWNLOAD_TARGETS`. Replaces `DOWNLOAD_TARGETS` for that tracker |
+| `DOWNLOAD_FORMATS` | — | **Deprecated.** The earlier variable, with `FORMAT:subfolder` entries. Read [Download targets](#download-targets) |
 
 Each tracker has its own credential variables. Read [Trackers](#trackers) for these.
 
 All credential variables also accept Docker secrets. Put the value in `/run/secrets/<variable name in lower case>`. For example, `GARMIN_EMAIL` reads `/run/secrets/garmin_email`. The container reads these files first, and the environment variables second.
 
-`DAYS_BACK` must be an integer. Each `TRACKERS` entry must name a known tracker. Each `DOWNLOAD_FORMATS` entry must name `FIT`, `GPX`, or `TCX`. The container validates these variables at startup. An invalid value stops the run with exit code `2`, before the first download.
+`DAYS_BACK` must be an integer. Each `TRACKERS` entry must name a known tracker. Each `DOWNLOAD_TARGETS` entry must name `FIT`, `GPX`, or `TCX`. The container validates these variables at startup. An invalid value stops the run with exit code `2`, before the first download.
 
 ## Trackers
 
@@ -120,7 +122,7 @@ All credential variables also accept Docker secrets. Put the value in `/run/secr
 TRACKERS=garmin,wahoo
 ```
 
-Each tracker downloads only the formats that it supplies. If `DOWNLOAD_FORMATS` asks for a format that a tracker does not supply, that tracker skips the format and writes a warning. The other trackers are not affected.
+Each tracker downloads only the formats that it supplies. If `DOWNLOAD_TARGETS` asks for a format that a tracker does not supply, that tracker skips the format and writes a warning. The other trackers are not affected. But if `<TRACKER>_DOWNLOAD_TARGETS` asks that tracker for the format by name, the container stops at startup with exit code `2`.
 
 | Tracker | Formats | Credentials | First setup |
 |---------|---------|-------------|-------------|
@@ -173,43 +175,82 @@ Wahoo gives one activity file for each workout, and it is always a FIT file. The
 > [!NOTE]
 > From 1 January 2026, Wahoo permits 10 unrevoked access tokens for each user. Each setup run uses one of these. The container refreshes a token only immediately before it reads the API, so a normal run does not waste tokens. If you get a token limit error, send `DELETE https://api.wahooligan.com/v1/permissions` to remove the application access, then run the setup again.
 
-### Download formats
+### Download targets
 
-A download format is a format name and, optionally, a subfolder inside the folder of that format. Every path starts with the format name. Therefore `data/<FORMAT>/` holds only the files of that format.
+A download target is a destination folder and the formats that go into it. A destination usually belongs to one downstream application, not to one format. Therefore a destination can hold more than one format, and it keeps its name when you add a format to it.
 
-A bare format name writes directly into its own folder. For example, `DOWNLOAD_FORMATS=FIT,GPX` fills `data/FIT` and `data/GPX`. Add `:subfolder` for one more level:
+An entry has this form:
 
-```bash
-DOWNLOAD_FORMATS=FIT:folderA
+```
+folder=FORMAT[+FORMAT]
 ```
 
-This entry writes to `data/FIT/folderA`. It never writes to `data/folderA`.
-
-You can write the same format more than once to fill more than one folder. Bare entries and subfolder entries are both permitted. Use this method to feed several downstream systems that delete the files after import. The container deduplicates each folder independently, with one marker for each file. A system that empties its folder does not get the same activity again, and the other folders do not change.
+A format name alone is a short form for a folder with the same name. `DOWNLOAD_TARGETS=FIT,GPX` fills `data/FIT` and `data/GPX`. This is the default layout.
 
 ```bash
-DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX
+DOWNLOAD_TARGETS=FIT, strava-inbox=GPX, app2=GPX+FIT
 ```
 
-This example fills `data/FIT`, `data/FIT/strava-inbox`, `data/FIT/archive`, and `data/GPX`. The container downloads each activity from the tracker one time for each format, independent of the number of folders.
+This example fills `data/FIT` with FIT files, `data/strava-inbox` with GPX files, and `data/app2` with GPX files and FIT files. The container downloads each activity from the tracker one time for each format, independent of the number of destinations.
 
-`DOWNLOAD_FORMATS` applies to all trackers. A tracker that cannot supply a format skips it. For example, with `TRACKERS=garmin,wahoo` and `DOWNLOAD_FORMATS=FIT,GPX`, Garmin fills `data/FIT` and `data/GPX`, and Wahoo fills only `data/FIT`.
+A destination folder can have more than one level:
 
-Subfolder names obey these rules:
+```bash
+DOWNLOAD_TARGETS=GPX/you@example.com=GPX
+```
 
-* A subfolder name is one folder name. It cannot contain `/` or `\`, and it cannot be `.` or `..`.
-* A subfolder is exactly one level below the format folder.
-* Format names are case-insensitive. Subfolder names are used exactly as written.
-* A repeated format and subfolder pair is permitted. The container ignores the duplicate and fills the folder one time.
-* Two formats can use the same subfolder name (`GPX:inbox,TCX:inbox`). Each subfolder stays inside its own format folder.
+#### Placeholders
+
+A destination can contain `{format}` or `{tracker}`. The container replaces them at startup, and one entry then fills more than one folder:
+
+| Entry | Result with `TRACKERS=garmin,wahoo` |
+|-------|--------------------------------------|
+| `archive/{format}=GPX+FIT` | `data/archive/GPX`, `data/archive/FIT` |
+| `{tracker}/{format}=FIT` | `data/garmin/FIT`, `data/wahoo/FIT` |
+
+#### One tracker only
+
+`DOWNLOAD_TARGETS` applies to all trackers. To give one tracker different destinations, set `<TRACKER>_DOWNLOAD_TARGETS`. This variable replaces `DOWNLOAD_TARGETS` for that tracker. It does not add to it.
+
+```bash
+TRACKERS=garmin,wahoo
+DOWNLOAD_TARGETS=FIT
+GARMIN_DOWNLOAD_TARGETS=FIT, GPX/you@example.com=GPX
+```
+
+Garmin fills `data/FIT` and `data/GPX/you@example.com`. Wahoo fills `data/FIT` only.
+
+A tracker with no variable of its own uses `DOWNLOAD_TARGETS`. A variable for a tracker that is not in `TRACKERS` is ignored, with a warning in the log.
+
+#### Rules
+
+* A destination folder is a relative path below `OUTPUT_DIR`. It cannot start with `/`, and no part of it can be `.` or `..`.
+* Format names are case-insensitive. Folder names are used exactly as written.
+* A repeated format and folder pair is permitted. The container ignores the duplicate and fills the folder one time.
+* Two formats in one folder do not collide, because the extension is different.
+* A tracker that cannot supply a format skips it, with a warning. But if `<TRACKER>_DOWNLOAD_TARGETS` asks for that format by name, the container stops with exit code `2`. For example, Wahoo supplies FIT only, so `WAHOO_DOWNLOAD_TARGETS=app2=GPX` is an error.
+
+#### DOWNLOAD_FORMATS (deprecated)
+
+`DOWNLOAD_FORMATS` continues to work with no change, and the container writes the same files as before. Its entries have a different form: `FORMAT:subfolder` puts the subfolder below the format folder, so `FIT:archive` fills `data/FIT/archive`.
+
+Set `DOWNLOAD_FORMATS` or `DOWNLOAD_TARGETS`, but not both. If both are set, the container stops with exit code `2`. To move to the new variable, write each old entry as a folder:
+
+| Old | New |
+|-----|-----|
+| `DOWNLOAD_FORMATS=FIT,GPX` | `DOWNLOAD_TARGETS=FIT,GPX` |
+| `DOWNLOAD_FORMATS=FIT:archive` | `DOWNLOAD_TARGETS=FIT/archive=FIT` |
+| `DOWNLOAD_FORMATS=FIT,FIT:archive,GPX:you@example.com` | `DOWNLOAD_TARGETS=FIT,FIT/archive=FIT,GPX/you@example.com=GPX` |
+
+Keep the same folder names during the move. The files and the markers then stay where they are, and the container downloads nothing again.
 
 ## Output files
 
-The container saves each activity as `<tracker>-<activityId>.<extension>` inside the format folder. The name is the name of the tracker and the activity ID from that tracker, not the date or the name of the activity. For a bare format, the format folder is `<OUTPUT_DIR>/<FORMAT>`. For a format with a subfolder, the format folder is `<OUTPUT_DIR>/<FORMAT>/<subfolder>`. The files of a format never leave the folder of that format.
+The container saves each activity as `<OUTPUT_DIR>/<destination>/<tracker>-<activityId>.<extension>`. The name is the name of the tracker and the activity ID from that tracker, not the date or the name of the activity. The destination comes from `DOWNLOAD_TARGETS`. Read [Download targets](#download-targets).
 
 The tracker name is part of the file name because two trackers can give the same activity ID. Without it, one tracker could write over the file of another tracker, and deduplication could skip a new activity.
 
-This example uses `TRACKERS=garmin,wahoo` and `DOWNLOAD_FORMATS=FIT,GPX,TCX`:
+This example uses `TRACKERS=garmin,wahoo` and `DOWNLOAD_TARGETS=FIT,GPX,TCX`:
 
 ```
 data/
@@ -222,17 +263,23 @@ data/
 
 Wahoo supplies only FIT, so `data/GPX` and `data/TCX` hold Garmin files only.
 
-This example uses subfolders, with `DOWNLOAD_FORMATS=FIT,FIT:strava-inbox,FIT:archive,GPX:you@example.com`:
+This example feeds two applications. Each one has its own folder, and the second one takes two formats:
+
+```bash
+TRACKERS=garmin
+DOWNLOAD_TARGETS=FIT, strava-inbox=FIT, app2=GPX+FIT
+```
 
 ```
 data/
-├── FIT
-│   ├── garmin-17284419021.fit
-│   ├── archive/garmin-17284419021.fit
-│   └── strava-inbox/garmin-17284419021.fit
-└── GPX
-    └── you@example.com/garmin-17284419021.gpx
+├── FIT/garmin-17284419021.fit
+├── strava-inbox/garmin-17284419021.fit
+└── app2
+    ├── garmin-17284419021.gpx
+    └── garmin-17284419021.fit
 ```
+
+The container gets each format from the tracker one time. It then writes that one file to each destination that does not have it.
 
 Deduplication uses only the filesystem. There is no database and no manifest. For each activity file, the container writes an empty marker file with the same name in the state folder. Before each download, the container looks for the marker. If the marker is there, the container skips that activity.
 
@@ -318,7 +365,11 @@ CAUTION: If you delete an activity file but keep its marker, the container does 
 
 The activity must be in the `DAYS_BACK` window. If the activity is older than this window, increase `DAYS_BACK` for one run.
 
-**The container downloads activities again after a reorganization.** Each marker matches one exact path, `<STATE_DIR>/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`. A move of the activity files alone is safe, because the markers do not change. But if you rename a subfolder in `DOWNLOAD_FORMATS`, the new folder has no markers, and the container fills it again. Move the folder below the state folder with the same name, or accept the one large run. Do not increase `DAYS_BACK`.
+**The container downloads activities again after a reorganization.** Each marker matches one exact path, `<STATE_DIR>/<destination>/<tracker>-<activityId>.<ext>`. A move of the activity files alone is safe, because the markers do not change. But if you rename a destination in `DOWNLOAD_TARGETS`, the new destination has no markers, and the container fills it again. Rename the folder below the state folder in the same way, or accept the one large run. Do not increase `DAYS_BACK`.
+
+```bash
+mv data/.state/old-name data/.state/new-name
+```
 
 **The container never downloads the older activities.** `DAYS_BACK` limits every run, so the container ignores all activities that are older than this window. To backfill, run the container one time with a larger value.
 

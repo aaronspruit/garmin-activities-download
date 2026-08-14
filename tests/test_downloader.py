@@ -245,8 +245,10 @@ class TestActivityIdValidation:
         assert (tmp_path / "GPX" / f"fake-{activity_id}.gpx").read_bytes() == SAMPLE_GPX
 
 
-class TestCustomSubfolderTargets:
-    def test_saves_format_to_custom_subfolder_under_the_format_folder(self, mock_tracker, tmp_path):
+class TestDestinationFolders:
+    """A destination is a folder owned by a consuming application, not a format category."""
+
+    def test_saves_a_format_to_its_named_destination(self, mock_tracker, tmp_path):
         count = download_new_activities(
             mock_tracker,
             str(tmp_path),
@@ -257,29 +259,40 @@ class TestCustomSubfolderTargets:
 
         filename = f"fake-{ACTIVITY.id}.gpx"
         assert count == 1
-        assert (tmp_path / "GPX" / "user@example.com" / filename).read_bytes() == SAMPLE_GPX
-        # Nothing lands at the root, nor directly in the format folder.
-        assert not (tmp_path / "user@example.com").exists()
-        assert not (tmp_path / "GPX" / filename).exists()
+        assert (tmp_path / "user@example.com" / filename).read_bytes() == SAMPLE_GPX
+        # The folder is the whole destination, so nothing is nested under a format.
+        assert not (tmp_path / "GPX").exists()
 
-    def test_bare_and_subfoldered_same_format_download_once(self, mock_tracker, tmp_path):
-        mock_tracker.download.return_value = SAMPLE_FIT_CONTENT
-
+    def test_saves_to_a_destination_several_levels_deep(self, mock_tracker, tmp_path):
         count = download_new_activities(
             mock_tracker,
             str(tmp_path),
-            targets=[DownloadTarget("FIT"), DownloadTarget("FIT", "folderA")],
+            targets=[DownloadTarget("GPX", "GPX/user@example.com")],
             days_back=7,
             download_delay=0,
         )
 
-        filename = f"fake-{ACTIVITY.id}.fit"
-        assert count == 2
-        assert mock_tracker.download.call_count == 1
-        assert (tmp_path / "FIT" / filename).read_bytes() == SAMPLE_FIT_CONTENT
-        assert (tmp_path / "FIT" / "folderA" / filename).read_bytes() == SAMPLE_FIT_CONTENT
+        assert count == 1
+        assert (tmp_path / "GPX" / "user@example.com" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == SAMPLE_GPX
 
-    def test_same_format_to_multiple_subfolders_downloads_once(self, mock_tracker, tmp_path):
+    def test_one_destination_holds_two_formats(self, mock_tracker, tmp_path):
+        """The case the format-nested layout could not express."""
+        payloads = {"GPX": SAMPLE_GPX, "FIT": SAMPLE_FIT_CONTENT}
+        mock_tracker.download.side_effect = lambda activity, fmt: payloads[fmt]
+
+        count = download_new_activities(
+            mock_tracker,
+            str(tmp_path),
+            targets=[DownloadTarget("GPX", "app2"), DownloadTarget("FIT", "app2")],
+            days_back=7,
+            download_delay=0,
+        )
+
+        assert count == 2
+        assert (tmp_path / "app2" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "app2" / f"fake-{ACTIVITY.id}.fit").read_bytes() == SAMPLE_FIT_CONTENT
+
+    def test_same_format_to_multiple_destinations_downloads_once(self, mock_tracker, tmp_path):
         count = download_new_activities(
             mock_tracker,
             str(tmp_path),
@@ -291,14 +304,14 @@ class TestCustomSubfolderTargets:
         filename = f"fake-{ACTIVITY.id}.gpx"
         assert count == 2
         assert mock_tracker.download.call_count == 1
-        assert (tmp_path / "GPX" / "inbox-a" / filename).read_bytes() == SAMPLE_GPX
-        assert (tmp_path / "GPX" / "inbox-b" / filename).read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "inbox-a" / filename).read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "inbox-b" / filename).read_bytes() == SAMPLE_GPX
 
-    def test_fills_only_the_subfolder_that_has_no_file_yet(self, mock_tracker, tmp_path):
-        """Each folder deduplicates on its own: one already holding the file is left alone."""
+    def test_fills_only_the_destination_that_has_no_file_yet(self, mock_tracker, tmp_path):
+        """Each destination deduplicates on its own: one already holding the file is left alone."""
         filename = f"fake-{ACTIVITY.id}.gpx"
-        (tmp_path / "GPX" / "keeps-files").mkdir(parents=True)
-        (tmp_path / "GPX" / "keeps-files" / filename).write_bytes(b"existing")
+        (tmp_path / "keeps-files").mkdir(parents=True)
+        (tmp_path / "keeps-files" / filename).write_bytes(b"existing")
 
         count = download_new_activities(
             mock_tracker,
@@ -310,10 +323,10 @@ class TestCustomSubfolderTargets:
 
         assert count == 1
         assert mock_tracker.download.call_count == 1
-        assert (tmp_path / "GPX" / "keeps-files" / filename).read_bytes() == b"existing"
-        assert (tmp_path / "GPX" / "deletes-on-import" / filename).read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "keeps-files" / filename).read_bytes() == b"existing"
+        assert (tmp_path / "deletes-on-import" / filename).read_bytes() == SAMPLE_GPX
 
-    def test_failed_download_writes_to_no_subfolder(self, mock_tracker, tmp_path):
+    def test_failed_download_writes_to_no_destination(self, mock_tracker, tmp_path):
         mock_tracker.download.side_effect = ActivityDownloadError("no .fit member")
 
         count = download_new_activities(
@@ -326,11 +339,11 @@ class TestCustomSubfolderTargets:
 
         filename = f"fake-{ACTIVITY.id}.fit"
         assert count == 0
-        assert not (tmp_path / "FIT" / "system-one" / filename).exists()
-        assert not (tmp_path / "FIT" / "system-two" / filename).exists()
+        assert not (tmp_path / "system-one" / filename).exists()
+        assert not (tmp_path / "system-two" / filename).exists()
 
-    def test_same_subfolder_name_stays_separate_per_format(self, mock_tracker, tmp_path):
-        """A shared subfolder name never mixes formats: each format keeps its own tree."""
+    def test_two_formats_in_one_destination_do_not_overwrite_each_other(self, mock_tracker, tmp_path):
+        """The extension keeps them apart, so the same activity can land twice."""
         payloads = {"GPX": SAMPLE_GPX, "TCX": SAMPLE_TCX}
         mock_tracker.download.side_effect = lambda activity, fmt: payloads[fmt]
 
@@ -343,10 +356,8 @@ class TestCustomSubfolderTargets:
         )
 
         assert count == 2
-        assert (tmp_path / "GPX" / "shared" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == SAMPLE_GPX
-        assert (tmp_path / "TCX" / "shared" / f"fake-{ACTIVITY.id}.tcx").read_bytes() == SAMPLE_TCX
-        assert not (tmp_path / "shared").exists()
-        assert list((tmp_path / "GPX" / "shared").glob("*.tcx")) == []
+        assert (tmp_path / "shared" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "shared" / f"fake-{ACTIVITY.id}.tcx").read_bytes() == SAMPLE_TCX
 
     def test_defaults_to_fit_when_no_targets_given(self, mock_tracker, tmp_path):
         mock_tracker.download.return_value = SAMPLE_FIT_CONTENT
@@ -403,24 +414,24 @@ class TestStateMarkerDedup:
         # Adoption is recorded, so deleting that file later does not re-fetch it.
         assert (tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx").exists()
 
-    def test_marker_is_per_folder(self, mock_tracker, tmp_path):
+    def test_marker_is_per_destination(self, mock_tracker, tmp_path):
         """One sink emptying its folder must not make the container refill another."""
         targets = [DownloadTarget("GPX", "inbox-a"), DownloadTarget("GPX", "inbox-b")]
         download_new_activities(mock_tracker, str(tmp_path), targets=targets, days_back=7, download_delay=0)
 
         filename = f"fake-{ACTIVITY.id}.gpx"
-        assert (tmp_path / ".state" / "GPX" / "inbox-a" / filename).exists()
-        assert (tmp_path / ".state" / "GPX" / "inbox-b" / filename).exists()
+        assert (tmp_path / ".state" / "inbox-a" / filename).exists()
+        assert (tmp_path / ".state" / "inbox-b" / filename).exists()
 
-        (tmp_path / ".state" / "GPX" / "inbox-a" / filename).unlink()
-        (tmp_path / "GPX" / "inbox-a" / filename).unlink()
+        (tmp_path / ".state" / "inbox-a" / filename).unlink()
+        (tmp_path / "inbox-a" / filename).unlink()
         mock_tracker.download.reset_mock()
 
         count = download_new_activities(mock_tracker, str(tmp_path), targets=targets, days_back=7, download_delay=0)
 
         assert count == 1
         assert mock_tracker.download.call_count == 1
-        assert (tmp_path / "GPX" / "inbox-a" / filename).read_bytes() == SAMPLE_GPX
+        assert (tmp_path / "inbox-a" / filename).read_bytes() == SAMPLE_GPX
 
     def test_no_marker_is_written_when_the_download_fails(self, mock_tracker, tmp_path):
         mock_tracker.download.side_effect = ActivityDownloadError("no .fit member")
