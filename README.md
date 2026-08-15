@@ -147,7 +147,7 @@ Wahoo uses OAuth2. The container cannot open a browser, so the first authenticat
 
 **Before you start**, do these steps one time:
 
-1. Register an application at the [Wahoo developer portal](https://developers.wahooligan.com/cloud). Make a note of the client ID and the client secret.
+1. Register an application at the [Wahoo developer portal](https://developers.wahooligan.com/cloud). Make a note of the client ID and the client secret.  The only difference between `Sandbox` and `Production` is the [rate limits](https://cloud-api.wahooligan.com/#registration). For personal use it is recommended to use `Sandbox`. 
 2. Register a redirect URI for the application. It must agree exactly with `WAHOO_REDIRECT_URI`. The default value is `https://localhost`. Wahoo does not accept an `http://` address.
 3. Give the application the scopes `user_read`, `workouts_read`, and `offline_data`.
 4. Put the client ID and the client secret in `.env` as `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`.
