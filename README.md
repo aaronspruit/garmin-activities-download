@@ -147,10 +147,11 @@ Wahoo uses OAuth2. The container cannot open a browser, so the first authenticat
 
 **Before you start**, do these steps one time:
 
-1. Register an application at the Wahoo developer portal. Make a note of the client ID and the client secret.
-2. Register a redirect URI for the application. It must agree exactly with `WAHOO_REDIRECT_URI`. The default value is `http://localhost`.
+1. Register an application at the [Wahoo developer portal](https://developers.wahooligan.com/cloud). Make a note of the client ID and the client secret.
+2. Register a redirect URI for the application. It must agree exactly with `WAHOO_REDIRECT_URI`. The default value is `https://localhost`. Wahoo does not accept an `http://` address.
 3. Give the application the scopes `user_read`, `workouts_read`, and `offline_data`.
 4. Put the client ID and the client secret in `.env` as `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`.
+5. Ask Wahoo to approve the application for the Cloud API. Read [Wahoo application approval](#wahoo-application-approval).
 
 > [!IMPORTANT]
 > Wahoo needs `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET` for **every** run, not only for the setup. The container uses them to refresh the access token. This is different from Garmin, where the credentials are only a fallback.
@@ -164,16 +165,33 @@ docker compose run --rm -it garmin-sync python -m src.setup wahoo
 The setup prints an authorization URL. Do these steps:
 
 1. Open the URL in a browser and approve the access.
-2. The browser goes to `http://localhost` and fails to load the page. This is correct. No program listens at that address.
+2. The browser goes to `https://localhost` and fails to load the page. This is correct. No program listens at that address.
 3. Copy the value of `code` from the address bar of the browser.
 4. Paste the value at the prompt.
 
 The setup saves the tokens to `<TOKENS_DIR>/wahoo/tokens.json`.
 
+> [!NOTE]
+> The setup completes before Wahoo approves the application, but the API then refuses every call with status 422. Do not put `wahoo` in `TRACKERS` until the approval is granted. Read [Wahoo application approval](#wahoo-application-approval).
+
 Wahoo gives one activity file for each workout, and it is always a FIT file. Therefore the Wahoo tracker skips `GPX` and `TCX`. A workout with no recorded file, such as a planned workout, is also skipped.
 
 > [!NOTE]
 > From 1 January 2026, Wahoo permits 10 unrevoked access tokens for each user. Each setup run uses one of these. The container refreshes a token only immediately before it reads the API, so a normal run does not waste tokens. If you get a token limit error, send `DELETE https://api.wahooligan.com/v1/permissions` to remove the application access, then run the setup again.
+
+#### Wahoo application approval
+
+Wahoo limits the Cloud API to the applications that it approved. Request the approval for your application in the developer portal, at [developer.wahoo.com/applications](https://developer.wahoo.com/applications). Give as much detail about the application as you can. The request stays pending until Wahoo replies. For a question about a request, use [Wahoo API support](https://wahooapi.zendesk.com/hc/en-us/requests/new).
+
+An application that is not approved still authorizes users, and the tokens that it gets are valid. Therefore the setup gives no error, and the problem appears only at the first download:
+
+```
+[ERROR] [wahoo] Authentication failed: Wahoo refused the request (422): This application has not
+been approved by Wahoo Fitness at this time. The tokens are fine -- it is the application that
+lacks Cloud API access. ...
+```
+
+The run exits with code `1`. Wait for the approval. Do not run the setup again, because it cannot correct this, and each run uses one of the 10 unrevoked access tokens.
 
 ### Download targets
 
@@ -313,7 +331,7 @@ The container runs one time and exits. It runs on a schedule with no operator, s
 | Code | Meaning | Action |
 |------|---------|--------|
 | `0` | Success. The container downloaded the new activities, or there was nothing new | None |
-| `1` | Authentication failed, and the credentials did not work | Run the interactive setup again for the tracker in the log (see below) |
+| `1` | The tracker refused the credentials or the application, and there was no fallback | Read the log line of that tracker. Usually you must run the interactive setup again (see below) |
 | `2` | Other error, for example an invalid configuration or a tracker API error | Read the logs. This error is often temporary and the next scheduled run corrects it |
 | `3` | A tracker returned an activity ID that is not alphanumeric, so the container built no output path | Read the logs. See [Unsafe activity IDs](#unsafe-activity-ids) |
 
@@ -344,8 +362,9 @@ On Kubernetes, run the setup again with one of the procedures in [Kubernetes Dep
 * The token file did not persist between runs, or a different run wrote over it.
 * The user revoked the application access.
 * The account is at the limit of 10 unrevoked access tokens.
+* Wahoo did not approve the application for the Cloud API. The log line then contains `This application has not been approved by Wahoo Fitness`. Read [Wahoo application approval](#wahoo-application-approval).
 
-Run `python -m src.setup wahoo` again to get a new token set. If the token limit is the cause, first send `DELETE https://api.wahooligan.com/v1/permissions`.
+Run `python -m src.setup wahoo` again to get a new token set. If the token limit is the cause, first send `DELETE https://api.wahooligan.com/v1/permissions`. But if the application is not approved, do not run the setup again. Only Wahoo can correct that, and each run uses one more access token.
 
 **You need an activity file again.** The container does not download an activity file again when the marker of that file is in the state folder. This is correct for an application that deletes each file after it reads the file. If you delete a file by accident, or if a file is damaged, delete its marker. The next run downloads that file again.
 
