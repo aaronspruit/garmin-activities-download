@@ -118,10 +118,10 @@ Seven more variables control the rate limits. Read [Rate limits](#rate-limits).
 |----------------------------|--------------------------|---------|--------------|
 | `MAX_DOWNLOADS_PER_RUN` | `<TRACKER>_MAX_DOWNLOADS_PER_RUN` | `0` | Number of files that one run writes before it stops. `0` removes the cap. It counts files, not activities, so an activity with 3 formats counts 3 times. The run compares the count between activities, so the last activity writes all of its formats and the run can finish above this number |
 | `RATE_LIMIT_MAX_WAIT` | `<TRACKER>_MAX_WAIT` | `300` | Longest single wait in seconds that a run accepts. A longer wait stops the run |
-| `MAX_RETRIES` | `<TRACKER>_MAX_RETRIES` | 2 for `garmin`, 3 for `wahoo` | Number of retries after a request fails |
+| `MAX_RETRIES` | `<TRACKER>_MAX_RETRIES` | 2 for `garmin`, 3 for `wahoo` | Number of retries after a failure that can clear, which is a rate limit refusal or a server failure. The container does not retry a refused credential or a missing file |
 | `BACKOFF_INITIAL` | `<TRACKER>_BACKOFF_INITIAL` | 30 for `garmin`, 5 for `wahoo` | Delay in seconds before the first retry. It doubles for each retry that follows |
 | `BACKOFF_MAX` | `<TRACKER>_BACKOFF_MAX` | `300` | Largest delay in seconds that the backoff produces |
-| — | `<TRACKER>_RATE_LIMIT` | see [Rate limits](#rate-limits) | Limits of that API, as `REQUESTS/SECONDS` entries, for example `20/60, 300/3600`. The value `none` removes every limit |
+| — | `<TRACKER>_RATE_LIMIT` | see [Rate limits](#rate-limits) | Limits of that API, as `REQUESTS/SECONDS` entries, for example `20/60, 300/3600`. The value `none` removes these windows. It does not remove `<TRACKER>_MIN_INTERVAL`, which still paces the requests |
 | — | `<TRACKER>_MIN_INTERVAL` | 2 for `garmin`, 0.5 for `wahoo` | Smallest gap in seconds between two requests to that tracker |
 
 The last two describe the API of one tracker, so they have no form for every tracker.
@@ -334,7 +334,7 @@ The Wahoo tier belongs to the application registration. You ask Wahoo for a sand
 
 Wahoo exempts the authentication, the token refresh, and the file downloads from its limits. A Wahoo run therefore spends its budget on the list pages alone, and it downloads the files at full speed. Wahoo also reports the count that is left in the headers of each response, and the container obeys those headers.
 
-One Wahoo list page holds 30 workouts, and the container reads at most 100 pages. A window of 3000 workouts therefore costs 100 requests to list, which is the whole hourly budget of a sandbox application. If a limit stops the list at page 50, the container keeps the 1500 workouts of pages 1 to 49 and downloads them, because the files cost nothing. The run is never wasted. A window that needs more pages than the budget allows is still a problem, because each run starts the list again at page 1. To fill a long history, raise `DAYS_BACK` in steps instead of in one jump.
+One Wahoo list page holds 30 workouts, and the container reads at most 100 pages. A window of 3000 workouts therefore costs 100 requests to list, which is the whole hourly budget of a sandbox application. If a limit stops the list at page 50, the container keeps the 1470 workouts of the 49 pages that it read, and it downloads them, because the files cost nothing. The run is never wasted. A window that needs more pages than the budget allows is still a problem, because each run starts the list again at page 1. To fill a long history, raise `DAYS_BACK` in steps instead of in one jump.
 
 Garmin publishes nothing, so its numbers are a judgement, not a fact. They are low on purpose. A Garmin refusal applies to the account, not to the address, and it has locked users out for 24 to 48 hours. Watch your own account for some weeks, then raise the numbers with `GARMIN_RATE_LIMIT` if you need a faster backfill.
 
