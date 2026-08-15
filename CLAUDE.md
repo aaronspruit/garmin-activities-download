@@ -8,6 +8,7 @@ These two rules are not optional. They apply to every change.
 
 1. **Write all documentation with `/simple-english`.** This covers the README, this file, comments and docstrings, commit messages, pull request titles and bodies, release notes, and messages the operator reads. Invoke the `simple-english` skill first, then write the text. Do not write the text first and clean it up later.
 2. **Breaking-change detail belongs only in the pull request.** Do not put migration steps, upgrade instructions, or "this breaks X" in the README or in this file. Put them in the pull request body, and give the pull request the correct `changelog:` label. The label carries the detail into the release notes. The README and this file describe how the code works now. The release notes are the only record of what changed. A design note can say why the current behavior exists, but it must not tell a user what to do about an older install.
+3. **Comments describe the present, not the past.** Comments in values files, manifests and this file say what the current config does and why. They do **not** narrate what it replaced, what it used to be, which overlay it was migrated off, or what a previous version did differently — `git log`/`git blame` already carry that, and a stale "X still serves Y" line becomes wrong the moment Y changes. When migrating something, write the new file as if it had always been that way, and strip the same kind of history out of any file the change touches. The migration story belongs in the commit message and the PR.
 
 ## Commands
 
