@@ -326,7 +326,7 @@ Each tracker paces its own requests, retries the failures that pass, and stops t
 
 Where the run stops decides what it can report. If a limit stops a download, the container knows the list of activities, so it writes a log line that names how many it did not reach. If a limit stops the list itself, there is no such number, and the container reports only that it downloaded nothing.
 
-An early stop is a success, and the exit code stays `0`. Every file that the run wrote already has its marker, so the next scheduled run continues at the same activity. An account with thousands of activities therefore fills across several runs. Nothing is lost, and no run is longer than one schedule interval.
+An early stop is a success, and the exit code stays `0`. Every file that the run wrote already has its marker, so the next scheduled run continues at the same activity. An account with thousands of activities therefore fills across several runs.
 
 ### The limits of each tracker
 
@@ -354,12 +354,6 @@ GARMIN_MIN_INTERVAL=1.0
 MAX_DOWNLOADS_PER_RUN=400
 RATE_LIMIT_MAX_WAIT=120
 ```
-
-An invalid value stops the run with exit code `2`, before the first request.
-
-### To add a tracker
-
-A new tracker gets all of this from one class attribute. Set `rate_limit` on the tracker class to a `RateLimitPolicy` with the published limits of that platform. If the platform publishes none, choose conservative numbers and write a comment that says the numbers are a guess. The operator then gets every `<TRACKER>_` variable above with no other change. Read [CLAUDE.md](CLAUDE.md).
 
 ## Errors and troubleshooting
 
