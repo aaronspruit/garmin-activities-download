@@ -1,6 +1,13 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when it works in this repository.
+
+## Mandatory rules
+
+These two rules are not optional. They apply to every change.
+
+1. **Write all documentation with `/simple-english`.** This covers the README, this file, comments and docstrings, commit messages, pull request titles and bodies, release notes, and messages the operator reads. Invoke the `simple-english` skill first, then write the text. Do not write the text first and clean it up later.
+2. **Breaking-change detail belongs only in the pull request.** Do not put migration steps, upgrade instructions, or "this breaks X" in the README or in this file. Put them in the pull request body, and give the pull request the correct `changelog:` label. The label carries the detail into the release notes. The README and this file describe how the code works now. The release notes are the only record of what changed. A design note can say why the current behavior exists, but it must not tell a user what to do about an older install.
 
 ## Commands
 
@@ -8,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install deps (runtime + dev)
 pip install -r requirements.txt -r requirements-dev.txt
 
-# Run the full test suite with coverage (coverage must stay >= 75%, enforced by pyproject.toml)
+# Run the full test suite with coverage (coverage must stay >= 75%, set in pyproject.toml)
 pytest --cov
 
 # Run a single test file / test / by keyword
@@ -25,54 +32,111 @@ ruff format .            # apply formatting
 docker build -t garmin-activities-download:test .
 ```
 
-Runs against Python 3.14 in CI (matching the Dockerfile `FROM python:3.14-slim`); project requires >= 3.12. Ruff line length is 120.
+CI runs Python 3.14, which matches the `python:3.14-slim` base image. The project needs 3.12 or later. The ruff line length is 120.
 
-The Dockerfile is multi-stage: `builder` installs [requirements.txt](requirements.txt) into `/opt/venv`, `runtime` (the default target, so the plain `docker build` above) copies that venv in and then deletes `pip`, `ensurepip` and other build-time parts of the base image, and `dev` keeps `pip` for the dev container (`"target": "dev"` in [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json)). Removing `pip` is what keeps the Trivy job green: pip vendors its own dependencies and, since 26.2, ships `pip/_vendor/bom.cdx.json` declaring them, so a scanner reads them as installed packages and flags their CVEs (msgpack, setuptools) even though nothing in `src/` imports them. Anything added to the runtime stage must not reintroduce `pip`.
+[Dockerfile](Dockerfile) has four stages. `base` holds the shared user and workdir. `builder` installs [requirements.txt](requirements.txt) into `/opt/venv`. `dev` keeps `pip` for the dev container, which [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) selects with `"target": "dev"`. `runtime` is last, so a plain `docker build` produces it.
+
+**Nothing added to the `runtime` stage can reintroduce `pip`.** That stage deletes `pip`, `ensurepip`, and other build-time parts of the base image, which is what keeps the Trivy job green. `pip` vendors its own dependencies and, since version 26.2, ships `pip/_vendor/bom.cdx.json` to declare them. A scanner reads that file as an installed package list and reports their CVEs, even though nothing in [src/](src/) imports them.
 
 ## Architecture
 
-A **run-once** container: it authenticates each enabled tracker, downloads any new activities, then exits (exit code 0 = success, 1 = auth failure, 3 = unsafe activity ID, 2 = other). This design targets a Kubernetes CronJob or host crontab, not a long-running service. There is no server or scheduler in the code — scheduling lives entirely in the deployment (crontab / [k8s/cronjob.yaml](k8s/cronjob.yaml)).
+The container runs once. It authenticates each enabled tracker, downloads new activities, then exits. Exit code 0 means success, 1 an auth failure, 3 an unsafe activity ID, and 2 anything else. The target is a Kubernetes CronJob or a host crontab, not a long-running service. There is no scheduler in the code. Scheduling lives in the deployment, in the crontab or in [k8s/cronjob.yaml](k8s/cronjob.yaml).
 
-Garmin is not privileged in the code: it is one implementation of the `Tracker` interface, alongside Wahoo. Everything platform-specific lives under [src/trackers/](src/trackers/); the pipeline around it is tracker-agnostic.
+Garmin holds no special position in the code. It is one implementation of the `Tracker` interface, next to Wahoo. All platform-specific code stays under [src/trackers/](src/trackers/). The rest of the pipeline names no tracker.
 
-1. **[src/config.py](src/config.py)** — `load_config()` builds a `Config` dataclass from env vars. `TRACKERS` parses via `_parse_trackers()` (validated against the registry, lowercased, deduplicated, order preserved). `DOWNLOAD_TARGETS` parses via `_parse_targets()` into `DownloadTarget(format, folder)`, where **`folder` is the whole destination path relative to `output_dir`** — a destination belongs to a consuming app, so one folder may hold several formats and may be several levels deep. Grammar: `folder=FMT[+FMT]` per entry, with a bare `FMT` short for `{format}=FMT`. `{format}`/`{tracker}` placeholders are rendered at *load* time (both are known there — the tracker from the variable name), so the downloader only ever sees concrete paths. `Config.download_targets` is therefore a `dict[tracker_name, list[DownloadTarget]]`: `<TRACKER>_DOWNLOAD_TARGETS` **replaces** (never merges with) `DOWNLOAD_TARGETS` for that tracker. A format the tracker cannot supply is a startup `ValueError` when named in the tracker's own variable, but only the downloader's runtime warning when merely inherited from the shared default — asserted vs. inferred. An unknown `<PREFIX>_DOWNLOAD_TARGETS` raises (a typo would otherwise silently do nothing); a known but disabled tracker only warns. `DOWNLOAD_FORMATS` is deprecated, parsed by the separate `_parse_legacy_formats()` (its `FMT:subfolder` nests *under* the format, the opposite model), and setting both raises. **`Config` holds no credentials** — each tracker reads its own in `from_env()`, so adding a tracker never touches this dataclass.
-2. **[src/trackers/base.py](src/trackers/base.py)** — the `Tracker` ABC (`from_env`, `authenticate`, `list_activities`, `download`, `interactive_setup`), the normalized `Activity(id, name, payload)`, `FORMAT_EXTENSIONS`, and the exceptions (`TrackerAuthError`, `ActivityDownloadError`, `UnsafeActivityIdError`). `download()` returns the **final** file bytes, so unwrapping is the tracker's job and the download loop stays generic. `Activity.payload` carries opaque per-tracker data from listing to download (Wahoo's file URL).
-3. **[src/trackers/\_\_init\_\_.py](src/trackers/__init__.py)** — `TRACKER_CLASSES`, built from the `_REGISTERED` tuple. **Adding a tracker = one new module + one entry here.** Imports must stay side-effect-free: CI smoke-tests the image with `python -c "import src.main"`.
-4. **[src/downloader.py](src/downloader.py)** — `download_new_activities(tracker, ...)` filters targets to `tracker.supported_formats` (warning about the rest, returning 0 early if none survive), then fetches and writes. Each `activity.id` is checked by `_is_safe_activity_id()` (ASCII alphanumeric) before it reaches a path; failure raises `UnsafeActivityIdError` → exit 3. **Dedup is filesystem-based but keys off a marker, not the file**: an empty file at `<state_dir>/<target.path>/<tracker>-<activityId>.<ext>` (default `<output_dir>/.state/…`) — still no database, no manifest. The indirection exists because consuming apps delete each file once they have imported it, so the file's absence cannot mean "not yet downloaded"; keying off it re-fetched the whole `DAYS_BACK` window every run. An activity file present without its marker is *adopted* (marker written, nothing downloaded) so upgrading an existing install does not re-download. The marker is written **after** the file, so a crash between them is recoverable. Targets are grouped by format so a format wanted in several folders costs one download per activity, written to every folder still missing it. A `download_delay` (default 1s) guards against rate limits.
-5. **[src/main.py](src/main.py)** — loops over `config.trackers`. **One tracker's failure must not stop the others**, so each is wrapped independently and the run exits with the most severe code, precedence `3 > 1 > 2 > 0`.
+**[src/config.py](src/config.py)** — `load_config()` builds the `Config` dataclass from environment variables.
 
-[src/env.py](src/env.py) holds `read_secret()` (`/run/secrets/<name lowercased>` first, then the env var). It is separate from `config.py` purely to break a `config` → `trackers` → `config` import cycle.
+- `TRACKERS` goes through `_parse_trackers()`. Names are validated against the registry, lowercased, and deduplicated, and keep first-occurrence order.
+- `DOWNLOAD_TARGETS` goes through `_parse_targets()` and produces `DownloadTarget(format, folder)`. **`folder` is the whole destination path under `output_dir`.** A destination belongs to a consuming application, so one folder can hold several formats and can be several levels deep.
+- The grammar is `folder=FMT[+FMT]` for each entry. A bare `FMT` is short for `{format}=FMT`.
+- `{format}` and `{tracker}` resolve at load time, because both are known there. The tracker comes from the variable name. The downloader therefore sees concrete paths only.
+- `Config.download_targets` is a `dict[tracker_name, list[DownloadTarget]]`. `<TRACKER>_DOWNLOAD_TARGETS` **replaces** `DOWNLOAD_TARGETS` for that tracker. It never merges with it.
+- A format the tracker cannot supply raises a startup `ValueError` when the tracker's own variable names it. The same format only produces a runtime warning from the downloader when the tracker inherits it from the shared default. The first case is asserted, the second is inferred.
+- An unknown `<PREFIX>_DOWNLOAD_TARGETS` raises, because a typo otherwise does nothing at all. A known but disabled tracker only warns.
+- `_validate_folder()` and `_assert_within()` keep every destination inside `output_dir`.
+- `DOWNLOAD_FORMATS` is deprecated and has its own parser, `_parse_legacy_formats()`. Its `FMT:subfolder` nests under the format, which is the opposite model. Setting both variables raises.
+- **`Config` holds no credentials.** Each tracker reads its own in `from_env()`, so a new tracker never changes this dataclass.
+
+**[src/trackers/base.py](src/trackers/base.py)** — the `Tracker` ABC (`from_env`, `authenticate`, `list_activities`, `download`, `interactive_setup`), the normalized `Activity(id, name, payload)`, `FORMAT_EXTENSIONS`, and the exceptions `TrackerAuthError`, `ActivityDownloadError`, and `UnsafeActivityIdError`. `download()` returns the **final** file bytes, so each tracker unwraps its own archives and the download loop stays generic. `Activity.payload` carries opaque per-tracker data from listing to download, such as the file URL from Wahoo.
+
+**[src/trackers/\_\_init\_\_.py](src/trackers/__init__.py)** — `TRACKER_CLASSES`, built from the `_REGISTERED` tuple. **A new tracker is one new module plus one entry here.** Every import must stay free of side effects, because CI smoke-tests the image with `python -c "import src.main"`.
+
+**[src/downloader.py](src/downloader.py)** — `download_new_activities(tracker, ...)` first drops targets the tracker cannot supply. It warns about them and returns 0 when none survive. Then it fetches and writes.
+
+- `_is_safe_activity_id()` checks each `activity.id` for ASCII letters and digits before it reaches a path. A failure raises `UnsafeActivityIdError`, which becomes exit code 3.
+- **Dedup reads a marker, not the activity file.** The marker is an empty file at `<state_dir>/<target.path>/<tracker>-<activityId>.<ext>`, under `<output_dir>/.state/` by default. There is still no database and no manifest.
+- The marker exists because consuming applications delete each activity file after import. The absence of the file therefore cannot mean "not yet downloaded". Keying off the file re-fetched the whole `DAYS_BACK` window on every run.
+- An activity file present without its marker is *adopted*. The run writes the marker and downloads nothing.
+- **The marker is written after the file**, so a crash between the two is recoverable.
+- Targets are grouped by format. One format wanted in several folders costs one download for each activity, written to every folder that is still missing it.
+- `download_delay` (1 second by default) protects against rate limits.
+
+**[src/main.py](src/main.py)** — loops over `config.trackers`. **One tracker's failure must not stop the others.** Each tracker is wrapped on its own, and the run exits with the most serious code. The precedence is `3 > 1 > 2 > 0`.
+
+[src/env.py](src/env.py) holds `read_secret()`, which reads `/run/secrets/<name lowercased>` first and then the environment variable. It is separate from `config.py` only to break a `config` → `trackers` → `config` import cycle.
 
 ### The trackers
 
-- **[src/trackers/garmin.py](src/trackers/garmin.py)** — FIT/GPX/TCX. Saved tokens first, email/password fallback (both optional). `_DL_FORMATS` maps a format token to a `garminconnect` enum plus a zipped flag; FIT is special because Garmin serves it as an `ORIGINAL` zip, so `_extract_fit_bytes()` pulls the first `.fit` member out.
-- **[src/trackers/wahoo.py](src/trackers/wahoo.py)** — FIT only. OAuth2 with a hard constraint worth reading the module docstring for: Wahoo revokes the previous access token only after a successful call with its replacement, and caps a user at 10 unrevoked tokens. **So `authenticate()` makes no network call and the refresh happens lazily at the first API call** — a refresh that is never used leaks a token, and ten such runs lock the user out. The rotated refresh token is persisted immediately (temp file + `os.replace`), since the old one is spent the moment the refresh succeeds. `/v1/workouts` has no date filter, so `list_activities` pages through `starts`-descending results until it passes the cutoff. Wahoo also gates the Cloud API on **application approval**, and an unapproved application still authorizes users and still gets valid tokens — the failure surfaces only at the first API call, as a 422 whose *body* names the cause. That is why `_raise_for_error()` replaces `raise_for_status()`: the status line alone sends the operator hunting a malformed query. It maps the not-approved 422 and any 401/403 to `TrackerAuthError` (exit 1, needs a human) and leaves every other status an `HTTPError` (exit 2), all with the body attached.
+**[src/trackers/garmin.py](src/trackers/garmin.py)** — FIT, GPX, and TCX. It tries saved tokens first and falls back to email and password. Both credentials are optional. `_DL_FORMATS` maps a format token to a `garminconnect` enum and a zipped flag. FIT is the special case: Garmin serves it as an `ORIGINAL` zip, so `_extract_fit_bytes()` pulls out the first `.fit` member.
 
-### Setup vs. main entrypoint
+**[src/trackers/wahoo.py](src/trackers/wahoo.py)** — FIT only, over OAuth2. Read the module docstring before you change this file. Two constraints shape it:
 
-- **[src/main.py](src/main.py)** (`python -m src.main`, the Dockerfile `CMD`) is the headless run — no interactive prompts.
-- **[src/setup.py](src/setup.py)** (`python -m src.setup <tracker>`) dispatches to that tracker's `interactive_setup()`. It must be run with `-it` once per tracker before any headless run. This split is the core of the auth model: interactive once, headless forever after. Garmin prompts for credentials and MFA; Wahoo prints an authorize URL and takes the OAuth code back by hand (the container has no browser).
+- Wahoo revokes the previous access token only after a successful call with its replacement. It also allows 10 unrevoked tokens for each user. **So `authenticate()` makes no network call, and the refresh happens lazily at the first API call.** A refresh that nothing uses leaks a token, and ten such runs lock the user out. The rotated refresh token is persisted at once, with a temp file and `os.replace`. The old one is spent as soon as the refresh succeeds.
+- Wahoo also limits the Cloud API to approved applications. An unapproved application still authorizes users and still receives valid tokens. The failure therefore appears only at the first API call, as a 422 whose *body* names the cause. `_raise_for_error()` replaces `raise_for_status()` for that reason: the status line alone sends the operator hunting a malformed query. It maps the not-approved 422 and any 401 or 403 to `TrackerAuthError`, which is exit code 1 and needs a human. Every other status stays an `HTTPError`, which is exit code 2. All of them carry the response body.
 
-### Output layout (breaking-change awareness)
+`/v1/workouts` has no date filter, so `list_activities` pages through `starts`-descending results until it passes the cutoff.
 
-Files are written as `data/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`. The tracker prefix exists because Garmin and Wahoo both hand out plain integer IDs, so an unprefixed name lets them collide and lets dedup wrongly skip a real activity. Because dedup is path-based, files from before the prefix (and, earlier still, GPX written flat into `data/`) are not recognized as already-downloaded — a known breaking change, called out in the release notes rather than the README.
+### Setup and the main entrypoint
+
+- **[src/main.py](src/main.py)** (`python -m src.main`, the Dockerfile `CMD`) is the headless run. It has no prompts.
+- **[src/setup.py](src/setup.py)** (`python -m src.setup <tracker>`) dispatches to that tracker's `interactive_setup()`. Run it once for each tracker, with `-it`, before any headless run. This split is the core of the auth model: interactive once, headless afterwards. Garmin asks for credentials and an MFA code. Wahoo prints an authorize URL and takes the OAuth code back by hand, because the container has no browser.
+
+### Output layout
+
+Files are written to `data/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`. The tracker prefix exists because Garmin and Wahoo both hand out plain integer IDs. Without the prefix their files collide, and dedup then skips a real activity. Dedup is path-based, so any change to this layout changes what counts as already downloaded. Such a change is a breaking change: describe it in the pull request, under rule 2 above, and not here.
 
 ## Configuration
 
-All config is env-var driven (see the table in [README.md](README.md)). Shared vars: `TRACKERS` (default `garmin`), `DAYS_BACK` (default 7), `TOKENS_DIR` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `STATE_DIR` (default `<OUTPUT_DIR>/.state`, for the dedup markers), `DOWNLOAD_TARGETS` (default `FIT`, accepts `folder=FMT[+FMT]` entries plus bare formats), `<TRACKER>_DOWNLOAD_TARGETS` (per-tracker replacement), and the deprecated `DOWNLOAD_FORMATS`. Per-tracker: `GARMIN_EMAIL`/`GARMIN_PASSWORD` (optional once tokens exist) and `WAHOO_CLIENT_ID`/`WAHOO_CLIENT_SECRET` (**required on every run** — the refresh needs them), plus optional `WAHOO_REDIRECT_URI`. All credentials are secret-aware. Each tracker stores tokens under `<TOKENS_DIR>/<name>`. Docker Compose mounts `./data` and `./tokens` as volumes to persist across the run-once lifecycle.
+Environment variables drive all configuration. [README.md](README.md) holds the full table.
+
+- Shared: `TRACKERS` (default `garmin`), `DAYS_BACK` (default 7), `TOKENS_DIR` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `STATE_DIR` (default `<OUTPUT_DIR>/.state`, for the dedup markers), `DOWNLOAD_TARGETS` (default `FIT`), `<TRACKER>_DOWNLOAD_TARGETS`, and the deprecated `DOWNLOAD_FORMATS`.
+- Garmin: `GARMIN_EMAIL` and `GARMIN_PASSWORD`, both optional once tokens exist.
+- Wahoo: `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`, **required on every run** because the refresh needs them, plus the optional `WAHOO_REDIRECT_URI`.
+
+Every credential can come from a Docker secret. Each tracker stores its tokens under `<TOKENS_DIR>/<name>`. Docker Compose mounts `./data` and `./tokens` as volumes, so both survive the run-once lifecycle.
 
 ## Testing notes
 
-No network or real credentials anywhere. [tests/conftest.py](tests/conftest.py) provides `FakeTracker` (a real `Tracker` subclass whose `list_activities`/`download` are `MagicMock`s — deliberately not `MagicMock(spec=Tracker)`, since `name` and `supported_formats` are bare `ClassVar` annotations a spec'd mock would not carry), the `mock_garmin` client mock, and sample GPX/TCX/FIT-zip and Wahoo JSON payloads. Wahoo tests mock at the `requests.Session` level. When changing download logic, update `_DL_FORMATS` and the corresponding sample payloads/zip builders in conftest together.
+The tests use no network and no real credentials. [tests/conftest.py](tests/conftest.py) provides:
+
+- `FakeTracker`, a real `Tracker` subclass whose `list_activities` and `download` are `MagicMock`s. It is deliberately not a `MagicMock(spec=Tracker)`, because `name` and `supported_formats` are bare `ClassVar` annotations that a spec'd mock does not carry.
+- `mock_garmin`, a `garminconnect` client mock.
+- Sample GPX, TCX, and FIT-zip payloads, and sample Wahoo JSON.
+
+Wahoo tests mock at the `requests.Session` level. When you change download logic, update `_DL_FORMATS` and the matching sample payloads and zip builders in conftest together.
 
 ## CI/CD
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on push/PR to `main` and on `v*.*.*` tags: `lint` + `test` in parallel → `build-push` (publishes to GHCR) → `security-scan` (Trivy, CRITICAL/HIGH) → `release` (only on version tags).
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on push and pull request to `main`, and on `v*.*.*` tags. The order is `lint` and `test` in parallel, then `build-push` (publishes to GHCR), then `security-scan` (Trivy, CRITICAL and HIGH, fixed vulnerabilities only), then `release` on version tags only.
 
-**A tag push never applies version tags or `latest` to the image** — `build-push` sets `flavor: latest=false` and carries no `type=semver` patterns, so the build is reachable only as `sha-<commit>`. `latest` moving at tag time would let a deployment that tracks it pull a release (breaking changes and all) before the notes existed. The version tags are applied afterwards by [.github/workflows/release-image-tags.yml](.github/workflows/release-image-tags.yml), on `release: published`/`released`, with `docker buildx imagetools create` against the *same digest* — no rebuild, so the digest Trivy scanned is the digest that ships and the attestation stays valid. It finds that digest from the `image-digest.txt` asset `release` attaches to the draft, falling back to the `sha-<commit>` tag of the commit the git tag points at. A pre-release gets `X.Y.Z-rc<N>` (first free `N`, probed against the registry) and never `latest`; a full release gets `X.Y.Z`, `X.Y`, `latest`, and `X` above 0.x, but only for a plain `X.Y.Z` tag.
+### Image tags
 
-The generated notes are pinned to a **release-to-release** range, not a tag-to-tag one: the `release` job resolves `previous_tag` from `releases/latest` (the last *published*, non-draft, non-prerelease release) and passes it to `softprops/action-gh-release`. Left to itself GitHub can choose an abandoned tag as the base — cut `v0.6.0`, abandon it, cut `v0.7.0`, and everything between `v0.5.2` and `v0.6.0` disappears from the notes while still shipping in the image. The same job deletes an existing *draft* for the tag being built (an abandoned or re-cut version, so the notes regenerate cleanly) and **fails** if a *published* release already owns that tag, since those notes are hand-written and never edited after the fact.
+**A tag push applies no version tags and no `latest`.** `build-push` sets `flavor: latest=false` and carries no `type=semver` pattern, so the build is reachable only as `sha-<commit>`. `latest` must not move before the notes exist, or a deployment that tracks it pulls a release that nobody can read about yet.
 
-Cut a release by pushing a `vX.Y.Z` tag, then **publish the draft by hand**. The `release` job creates a *draft*, whose body is [.github/release-notes-template.md](.github/release-notes-template.md) followed by GitHub's generated notes (a supplied body is pre-pended to them, not replaced by them). Replace the `{{RELEASE HIGHLIGHTS}}` placeholder in the draft and publish. The draft exists so the highlights are written before anyone is notified — and publishing is now also what moves the image tags. Nothing here should ever be edited after publishing.
+[.github/workflows/release-image-tags.yml](.github/workflows/release-image-tags.yml) applies the version tags afterwards, on `release: published` and `released`. It uses `docker buildx imagetools create` against the **same digest**, so there is no rebuild. The digest that Trivy scanned is the digest that ships, and the attestation stays valid. The workflow reads that digest from the `image-digest.txt` asset that `release` attaches to the draft. If the asset is gone, it falls back to the `sha-<commit>` tag of the commit that the git tag points at.
 
-The generated half is sorted into sections by [.github/release.yml](.github/release.yml), keyed on the `changelog:` label each PR carries. [.github/workflows/pr-label-validation.yml](.github/workflows/pr-label-validation.yml) fails any PR that does not carry exactly one, since a label forgotten at merge time is only noticed when the release is cut. Dependabot self-labels via [.github/dependabot.yml](.github/dependabot.yml). Use `changelog:skip` for a change that should not appear in the notes at all.
+A pre-release gets `X.Y.Z-rc<N>` and never `latest`. `N` is the first free number, probed against the registry. A full release gets `X.Y.Z`, `X.Y`, and `latest`, plus `X` above 0.x, but only for a plain `X.Y.Z` tag.
+
+### Releases
+
+Cut a release by pushing a `vX.Y.Z` tag. Then **publish the draft by hand.** The `release` job creates a *draft* whose body is [.github/release-notes-template.md](.github/release-notes-template.md) followed by the notes GitHub generates. A supplied body is pre-pended to the generated notes, not replaced by them. Replace the `{{RELEASE HIGHLIGHTS}}` placeholder in the draft, then publish.
+
+The draft exists so that somebody writes the highlights before anybody is notified. Publishing is also what moves the image tags. Never edit a release after you publish it.
+
+The generated notes cover a **release-to-release** range, not a tag-to-tag one. The `release` job resolves `previous_tag` from `releases/latest` and passes it to `softprops/action-gh-release`. That endpoint returns the last published release, which is neither a draft nor a pre-release. Left alone, GitHub can pick an abandoned tag as the base. Cut `v0.6.0`, abandon it, cut `v0.7.0`, and everything between `v0.5.2` and `v0.6.0` disappears from the notes while it still ships in the image.
+
+The same job deletes an existing *draft* for the tag it is building, which is an abandoned or re-cut version, so the notes regenerate cleanly. It **fails** when a *published* release already owns that tag, because those notes are written by hand and are never edited afterwards.
+
+### Labels
+
+[.github/release.yml](.github/release.yml) sorts the generated notes into sections, keyed on the `changelog:` label that each pull request carries. [.github/workflows/pr-label-validation.yml](.github/workflows/pr-label-validation.yml) fails any pull request that does not carry exactly one. A label forgotten at merge time is noticed only when the release is cut. Dependabot labels itself through [.github/dependabot.yml](.github/dependabot.yml). Use `changelog:skip` for a change that must not appear in the notes at all.
