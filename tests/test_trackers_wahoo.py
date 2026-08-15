@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from src.ratelimit import BudgetExhaustedError, TransientError, Window
+from src.ratelimit import BudgetExhaustedError, RateLimitError, TransientError, Window
 from src.trackers.base import Activity, ActivityDownloadError, TrackerAuthError
 from src.trackers.wahoo import WahooTracker
 from tests.conftest import (
@@ -559,3 +559,27 @@ class TestRateLimit:
         # forced a refresh first.
         assert tracker.session.post.call_count == 1
         assert tracker.limiter.requests == 1
+
+    def test_a_reset_header_that_is_not_a_number_is_ignored(self, tmp_path):
+        """The header is server-controlled, so it must not fail the run."""
+        tracker = self._ready(tmp_path)
+        tracker.rate_limit = replace(tracker.rate_limit, max_retries=0)
+        response = _response(status_code=429, json_body={"error": "too many requests"})
+        response.headers = {"X-RateLimit-Reset": "soon"}
+        tracker.session.get.return_value = response
+
+        # A rate limit error, which retries, rather than a ValueError, which
+        # ends the run for this tracker.
+        with pytest.raises(RateLimitError, match="rate limit"):
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+    def test_a_remaining_header_that_is_not_a_number_is_ignored(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        response = _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]})
+        response.headers = {"X-RateLimit-Remaining": "0, 0, 0", "X-RateLimit-Reset": "soon"}
+        tracker.session.get.return_value = response
+
+        tracker.list_activities("2026-08-06", "2026-08-13")
+
+        # An empty window with no readable reset gives no wait to obey.
+        assert tracker.limiter._blocked_until == 0.0

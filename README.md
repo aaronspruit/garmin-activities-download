@@ -110,17 +110,24 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 | `STATE_DIR` | `<OUTPUT_DIR>/.state` | Path where the container writes the deduplication markers. One empty marker for each activity file |
 | `DOWNLOAD_TARGETS` | `FIT` | Comma-separated list of destinations. Each entry is `FIT`, `GPX`, or `TCX`, or `folder=FORMAT+FORMAT` |
 | `<TRACKER>_DOWNLOAD_TARGETS` | — | Destinations for one tracker only, for example `GARMIN_DOWNLOAD_TARGETS`. Replaces `DOWNLOAD_TARGETS` for that tracker |
-| `MAX_DOWNLOADS_PER_RUN` | unlimited | Largest number of files that one run writes, for every tracker. `0` removes the cap. The run checks this between activities, so all formats of one activity stay together |
-| `RATE_LIMIT_MAX_WAIT` | `300` | Longest single wait in seconds that a run accepts. A longer wait stops the run |
-| `MAX_RETRIES` | see [Rate limits](#rate-limits) | Number of retries after a request fails |
-| `BACKOFF_INITIAL` | see [Rate limits](#rate-limits) | Delay in seconds before the first retry. It doubles for each retry that follows |
-| `BACKOFF_MAX` | see [Rate limits](#rate-limits) | Largest delay in seconds that the backoff produces |
 | `WAHOO_APP_TIER` | `sandbox` | Rate limits that Wahoo applies to your application. Set it to `production` after Wahoo approves the application |
 
-Each tracker has its own limits, so each of the last four variables also has a
-`<TRACKER>_` form that replaces it: `GARMIN_MAX_RETRIES`,
-`WAHOO_MAX_DOWNLOADS_PER_RUN`, and so on. Two more variables describe the API
-itself and have no shared form. Read [Rate limits](#rate-limits).
+Five more variables control the rate limits. Each applies to every tracker, and
+each has a form for one tracker that replaces it. Read [Rate limits](#rate-limits).
+
+| Variable | Form for one tracker | Default | Description |
+|----------|----------------------|---------|--------------|
+| `MAX_DOWNLOADS_PER_RUN` | `<TRACKER>_MAX_DOWNLOADS_PER_RUN` | unlimited | Number of files that one run writes before it stops. `0` removes the cap. The run counts between activities, so it can pass this number and keep all formats of one activity together |
+| `RATE_LIMIT_MAX_WAIT` | `<TRACKER>_MAX_WAIT` | `300` | Longest single wait in seconds that a run accepts. A longer wait stops the run |
+| `MAX_RETRIES` | `<TRACKER>_MAX_RETRIES` | 2 for `garmin`, 3 for `wahoo` | Number of retries after a request fails |
+| `BACKOFF_INITIAL` | `<TRACKER>_BACKOFF_INITIAL` | 30 for `garmin`, 5 for `wahoo` | Delay in seconds before the first retry. It doubles for each retry that follows |
+| `BACKOFF_MAX` | `<TRACKER>_BACKOFF_MAX` | `300` | Largest delay in seconds that the backoff produces |
+
+The name of the max-wait form is `<TRACKER>_MAX_WAIT`, for example
+`GARMIN_MAX_WAIT`. It does not repeat the `RATE_LIMIT_` part.
+
+Two more variables describe the API of one tracker, so they have no form that
+applies to every tracker.
 
 | Variable | Description |
 |----------|--------------|
@@ -315,7 +322,9 @@ The marker makes the activity file itself removable. An application can read a f
 
 ## Rate limits
 
-Each tracker paces its own requests, retries the failures that pass, and stops the run when it reaches a limit. The container never waits out a long limit. If the next request needs more than `RATE_LIMIT_MAX_WAIT` seconds, the run stops early and writes a log line that names how many activities are left.
+Each tracker paces its own requests, retries the failures that pass, and stops the run when it reaches a limit. The container never waits out a long limit. If the next request needs more than `RATE_LIMIT_MAX_WAIT` seconds, the run stops early.
+
+Where the run stops decides what it can report. If a limit stops a download, the container knows the list of activities, so it writes a log line that names how many it did not reach. If a limit stops the list itself, there is no such number, and the container reports only that it downloaded nothing.
 
 An early stop is a success, and the exit code stays `0`. Every file that the run wrote already has its marker, so the next scheduled run continues at the same activity. An account with thousands of activities therefore fills across several runs. Nothing is lost, and no run is longer than one schedule interval.
 

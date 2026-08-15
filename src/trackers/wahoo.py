@@ -128,6 +128,25 @@ def _error_message(response: requests.Response) -> str:
     return str(response.text or "").strip()[:200] or "no response body"
 
 
+def _reset_seconds(response: requests.Response) -> float | None:
+    """Read `X-RateLimit-Reset` as a number of seconds.
+
+    The header is server-controlled, so a value that is not a number gives
+    `None` instead of an exception. The limiter retries a rate limit and a
+    temporary failure, and it does not retry a `ValueError`, so an unguarded
+    parse would turn a recoverable stop into a failed run.
+    """
+    raw = response.headers.get(_HEADER_RESET)
+    if not raw:
+        return None
+
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.debug("Could not read the Wahoo %s header: %r", _HEADER_RESET, raw)
+        return None
+
+
 def _token_response_to_tokens(payload: dict) -> dict:
     """Normalize an /oauth/token response into what we persist."""
     return {
@@ -273,11 +292,11 @@ class WahooTracker(Tracker):
 
         try:
             counts = [int(part.strip()) for part in remaining.split(",") if part.strip()]
-            reset = float(response.headers.get(_HEADER_RESET, 0) or 0)
         except ValueError:
             logger.debug("Could not read the Wahoo rate limit headers: %r", remaining)
             return
 
+        reset = _reset_seconds(response) or 0.0
         if counts and min(counts) <= 0 and reset > 0:
             logger.info("Wahoo reports no requests left in a window, waiting %.0fs for the reset", reset)
             self.limiter.penalize(reset)
@@ -303,10 +322,9 @@ class WahooTracker(Tracker):
             # Wahoo states the exact wait, so the limiter uses it instead of its
             # own backoff. A daily limit gives a reset of many hours, which ends
             # the run rather than holding the container open until then.
-            reset = response.headers.get(_HEADER_RESET)
             raise RateLimitError(
                 f"Wahoo refused the request because of its rate limit: {message}",
-                retry_after=float(reset) if reset else None,
+                retry_after=_reset_seconds(response),
             )
 
         if response.status_code >= 500:

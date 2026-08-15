@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 import io
+import os
 import zipfile
 from unittest.mock import MagicMock
 
@@ -159,6 +160,30 @@ class FakeTracker(Tracker):
     @classmethod
     def interactive_setup(cls, tokens_dir):  # pragma: no cover - not used in tests
         raise NotImplementedError
+
+
+# Names that `load_policy` reads. The shared forms are generic enough to exist
+# already in a developer shell or a devcontainer `.env`, and a leaked value
+# changes a policy that a test asserts on.
+_RATE_LIMIT_VARS = (
+    "MAX_DOWNLOADS_PER_RUN",
+    "MAX_RETRIES",
+    "BACKOFF_INITIAL",
+    "BACKOFF_MAX",
+    "RATE_LIMIT_MAX_WAIT",
+)
+_RATE_LIMIT_SUFFIXES = _RATE_LIMIT_VARS + ("RATE_LIMIT", "MIN_INTERVAL", "MAX_WAIT")
+
+
+@pytest.fixture(autouse=True)
+def clean_rate_limit_env(monkeypatch):
+    """Hide any rate limit variable of the real environment from the tests.
+
+    A test that wants one sets it with `monkeypatch.setenv`.
+    """
+    for name in list(os.environ):
+        if name in _RATE_LIMIT_VARS or any(name.endswith(f"_{suffix}") for suffix in _RATE_LIMIT_SUFFIXES):
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

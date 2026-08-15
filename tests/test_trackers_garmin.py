@@ -1,5 +1,6 @@
 """Tests for the Garmin Connect tracker."""
 
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -246,9 +247,42 @@ class TestRateLimit:
             with pytest.raises(TrackerAuthError, match="rate limit"):
                 tracker.authenticate()
 
-            # Three login attempts from the retries, and no second client for
-            # the credential fallback.
+            # The first attempt and the two retries that the policy allows, all
+            # on the same client. No second client for the credential fallback.
+            assert instance.login.call_count == 3
             assert mock_garmin_cls.call_count == 1
+
+    def test_a_budget_stop_does_not_try_the_credentials(self):
+        """`BudgetExhaustedError` is the other rate limit outcome of a login."""
+        with patch("src.trackers.garmin.Garmin") as mock_garmin_cls:
+            instance = MagicMock()
+            instance.login.side_effect = GarminConnectTooManyRequestsError("429")
+            mock_garmin_cls.return_value = instance
+
+            tracker = GarminTracker(tokenstore="/tmp/tokens", email="a@b.c", password="pass")
+            # A wait longer than the run accepts, which `_attempt` reports as a
+            # budget stop rather than as a rate limit error.
+            tracker.rate_limit = replace(tracker.rate_limit, max_wait=1.0, backoff_initial=600.0)
+
+            with pytest.raises(TrackerAuthError, match="Do not log in again"):
+                tracker.authenticate()
+
+            assert instance.login.call_count == 1
+            assert mock_garmin_cls.call_count == 1
+
+    def test_a_refusal_of_the_credential_login_is_named(self):
+        """The fallback path must give the same guidance as the token path."""
+        with patch("src.trackers.garmin.Garmin") as mock_garmin_cls:
+            token_client = MagicMock()
+            token_client.login.side_effect = FileNotFoundError("No tokens")
+            credential_client = MagicMock()
+            credential_client.login.side_effect = GarminConnectTooManyRequestsError("429")
+            mock_garmin_cls.side_effect = [token_client, credential_client]
+
+            tracker = GarminTracker(tokenstore="/tmp/tokens", email="a@b.c", password="pass")
+
+            with pytest.raises(TrackerAuthError, match="Do not log in again"):
+                tracker.authenticate()
 
     def test_a_login_refusal_names_the_wait(self):
         with patch("src.trackers.garmin.Garmin") as mock_garmin_cls:

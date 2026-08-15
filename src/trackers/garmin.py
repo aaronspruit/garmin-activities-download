@@ -9,7 +9,7 @@ import zipfile
 from garminconnect import Garmin, GarminConnectTooManyRequestsError
 
 from src.env import read_secret
-from src.ratelimit import RateLimitError, RateLimitPolicy, Window
+from src.ratelimit import BudgetExhaustedError, RateLimitError, RateLimitPolicy, Window
 from src.trackers.base import Activity, ActivityDownloadError, Tracker, TrackerAuthError
 
 logger = logging.getLogger(__name__)
@@ -110,16 +110,14 @@ class GarminTracker(Tracker):
         """
         client = Garmin()
         try:
-            self.limiter.call(_counted, client.login, self.tokenstore)
+            self._login(client)
             logger.info("Authenticated using saved tokens")
             self.client = client
             return
-        except RateLimitError as e:
-            raise TrackerAuthError(
-                f"Garmin refused the login because of its rate limit: {e}. "
-                f"This limit applies to the account and can last many hours. "
-                f"Wait for the next scheduled run. Do not log in again in the meantime."
-            ) from e
+        except TrackerAuthError:
+            # Already the rate limit refusal below. The fallback is for a token
+            # that expired, and a second login now deepens the lockout.
+            raise
         except Exception as e:
             logger.info("Saved token login failed: %s", e)
 
@@ -129,9 +127,26 @@ class GarminTracker(Tracker):
             )
 
         client = Garmin(email=self.email, password=self.password)
-        self.limiter.call(_counted, client.login, self.tokenstore)
+        self._login(client)
         logger.info("Authenticated with credentials, tokens saved")
         self.client = client
+
+    def _login(self, client: Garmin) -> None:
+        """Log in once, and name a rate limit refusal for what it is.
+
+        Both rate limit outcomes end here: `RateLimitError` after the last
+        retry, and `BudgetExhaustedError` when the wait is longer than the run
+        accepts. Neither must reach the broad `except Exception` above, which
+        would report the refusal as an expired token and log in a second time.
+        """
+        try:
+            self.limiter.call(_counted, client.login, self.tokenstore)
+        except (RateLimitError, BudgetExhaustedError) as e:
+            raise TrackerAuthError(
+                f"Garmin refused the login because of its rate limit: {e}. "
+                f"This limit applies to the account and can last many hours. "
+                f"Wait for the next scheduled run. Do not log in again in the meantime."
+            ) from e
 
     def _require_client(self) -> Garmin:
         if self.client is None:

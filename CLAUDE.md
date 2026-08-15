@@ -68,8 +68,8 @@ Garmin holds no special position in the code. It is one implementation of the `T
 - Windows are sliding counters, so a burst at the start of a run cannot exceed a published limit.
 - **`BudgetExhaustedError` is not a failure.** A wait longer than `max_wait` raises it, the run stops early, and the exit code stays `0`. The markers make it safe: the next run continues at the same activity. Waiting out a daily limit would hold the container open for hours and overlap the next schedule.
 - `load_policy` reads the environment directly, for the same reason as `env.py`: a loader inside `config.py` would make a `config` → `trackers` → `config` cycle. `load_config` still calls it once for each tracker, so a typo stops the run at startup rather than at the first request.
-- Two groups of variables. `<TRACKER>_RATE_LIMIT` and `<TRACKER>_MIN_INTERVAL` describe the API, so they have no shared form. The rest describe how patient the deployment is, so each has a shared form that `<TRACKER>_` replaces.
 - `RateLimiter` resolves `time.sleep` and `time.monotonic` at each call, not at construction, so a test can replace them after a limiter exists. `tests/conftest.py` makes every wait instant with an autouse fixture.
+- [README.md](README.md) holds the variable names, the defaults, and the limits of each tracker. Do not repeat them here.
 
 **[src/trackers/\_\_init\_\_.py](src/trackers/__init__.py)** — `TRACKER_CLASSES`, built from the `_REGISTERED` tuple. **A new tracker is one new module plus one entry here.** Every import must stay free of side effects, because CI smoke-tests the image with `python -c "import src.main"`.
 
@@ -81,8 +81,8 @@ Garmin holds no special position in the code. It is one implementation of the `T
 - An activity file present without its marker is *adopted*. The run writes the marker and downloads nothing.
 - **The marker is written after the file**, so a crash between the two is recoverable.
 - Targets are grouped by format. One format wanted in several folders costs one download for each activity, written to every folder that is still missing it.
-- **The downloader holds no delay of its own.** Pacing belongs to the tracker, which knows its own limits. The loop only catches `BudgetExhaustedError`, records what it wrote, and reports how many activities it did not reach.
-- `max_downloads` comes from the tracker policy and caps one run. `0` leaves the windows alone to limit it, which is the usual case.
+- **The downloader holds no delay of its own.** Pacing belongs to the tracker, which knows its own limits. For a rate limit, the loop catches `BudgetExhaustedError`, records what it wrote, and reports how many activities it did not reach. It still catches `ActivityDownloadError` for one activity that cannot be fetched.
+- `max_downloads` comes from the tracker policy and caps one run. It is checked between activities, so a run can pass it by the number of formats minus one, and all formats of one activity stay together. `0` leaves the windows alone to limit the run, which is the usual case.
 
 **[src/main.py](src/main.py)** — loops over `config.trackers`. **One tracker's failure must not stop the others.** Each tracker is wrapped on its own, and the run exits with the most serious code. The precedence is `3 > 1 > 2 > 0`. `BudgetExhaustedError` is caught before the other handlers and gives `0`, because a rate limit defers work and never loses it. A new exit code would make a Kubernetes CronJob report a normal backfill as a failed pod.
 
@@ -117,7 +117,7 @@ Files are written to `data/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`.
 Environment variables drive all configuration. [README.md](README.md) holds the full table.
 
 - Shared: `TRACKERS` (default `garmin`), `DAYS_BACK` (default 7), `TOKENS_DIR` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `STATE_DIR` (default `<OUTPUT_DIR>/.state`, for the dedup markers), `DOWNLOAD_TARGETS` (default `FIT`), `<TRACKER>_DOWNLOAD_TARGETS`, and the deprecated `DOWNLOAD_FORMATS`.
-- Rate limits: `MAX_DOWNLOADS_PER_RUN`, `RATE_LIMIT_MAX_WAIT`, `MAX_RETRIES`, `BACKOFF_INITIAL`, and `BACKOFF_MAX`, each with a `<TRACKER>_` form that replaces it. `<TRACKER>_RATE_LIMIT` and `<TRACKER>_MIN_INTERVAL` describe the API, so they have no shared form.
+- Rate limits: `load_policy()` in [src/ratelimit.py](src/ratelimit.py) holds the whole list. Note that the per-tracker form of `RATE_LIMIT_MAX_WAIT` is `<TRACKER>_MAX_WAIT`, which is the one name that does not simply take a prefix.
 - Garmin: `GARMIN_EMAIL` and `GARMIN_PASSWORD`, both optional once tokens exist.
 - Wahoo: `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`, **required on every run** because the refresh needs them, plus the optional `WAHOO_REDIRECT_URI` and `WAHOO_APP_TIER` (default `sandbox`).
 
