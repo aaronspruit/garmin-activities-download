@@ -97,7 +97,7 @@ class TestWahooInteractiveSetup:
         sent = post.call_args.kwargs["data"]
         assert sent["grant_type"] == "authorization_code"
         assert sent["code"] == "pasted-code"
-        assert sent["redirect_uri"] == "http://localhost"
+        assert sent["redirect_uri"] == "https://localhost"
 
         saved = json.loads((tmp_path / "wahoo" / "tokens.json").read_text())
         assert saved["refresh_token"] == "new-refresh"
@@ -118,6 +118,20 @@ class TestWahooInteractiveSetup:
         assert "offline_data" in out
         # The failing redirect is expected, so the operator must be told.
         assert "expected" in out
+
+    def test_warns_that_saved_tokens_do_not_mean_an_approved_application(self, monkeypatch, tmp_path, capsys):
+        """Setup succeeds either way, so the 422 that follows must be explained here."""
+        self._env(monkeypatch)
+        monkeypatch.setattr("builtins.input", MagicMock(return_value="code"))
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"access_token": "a", "refresh_token": "r", "expires_in": 7200}
+
+        with patch("src.trackers.wahoo.requests.post", return_value=response):
+            WahooTracker.interactive_setup(str(tmp_path))
+
+        out = capsys.readouterr().out
+        assert "has not been approved" in out
+        assert "https://developer.wahoo.com/applications" in out
 
     def test_honours_a_custom_redirect_uri(self, monkeypatch, tmp_path, capsys):
         self._env(monkeypatch)

@@ -11,6 +11,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from src.trackers.base import Activity, ActivityDownloadError, TrackerAuthError
 from src.trackers.wahoo import WahooTracker
@@ -271,6 +272,65 @@ class TestListActivities:
 
         assert tracker.list_activities("2026-08-06", "2026-08-13") == []
         assert tracker.session.get.call_count == 1
+
+
+class TestApiErrors:
+    """A failed call must say what Wahoo said, not just which status it returned."""
+
+    def _ready(self, tmp_path):
+        _write_tokens(
+            tmp_path,
+            {"access_token": "good", "refresh_token": "r", "expires_at": time.time() + 3600},
+        )
+        tracker = _tracker(tmp_path)
+        tracker.authenticate()
+        return tracker
+
+    def test_an_unapproved_application_is_an_auth_error_not_a_bad_request(self, tmp_path):
+        """Wahoo's 422 for this reads like a malformed query, and setup cannot fix it."""
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(
+            status_code=422,
+            json_body={"error": "This application has not been approved by Wahoo Fitness at this time"},
+        )
+
+        with pytest.raises(TrackerAuthError, match="has not been approved") as excinfo:
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+        assert "developer.wahoo.com/applications" in str(excinfo.value)
+
+    def test_a_rejected_token_is_an_auth_error(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(status_code=401, json_body={"error": "unauthorized"})
+
+        with pytest.raises(TrackerAuthError, match="unauthorized"):
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+    def test_other_failures_keep_the_http_error_but_carry_the_body(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(status_code=422, json_body={"error": "per_page is invalid"})
+
+        with pytest.raises(requests.HTTPError, match="per_page is invalid"):
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+    def test_falls_back_to_the_raw_body_when_it_is_not_json(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        response = _response(status_code=502)
+        response.json.side_effect = ValueError("not json")
+        response.text = "<html>Bad Gateway</html>"
+        tracker.session.get.return_value = response
+
+        with pytest.raises(requests.HTTPError, match="Bad Gateway"):
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+    def test_reports_an_empty_body_rather_than_nothing(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        response = _response(status_code=500)
+        response.text = ""
+        tracker.session.get.return_value = response
+
+        with pytest.raises(requests.HTTPError, match="no response body"):
+            tracker.list_activities("2026-08-06", "2026-08-13")
 
 
 class TestDownload:

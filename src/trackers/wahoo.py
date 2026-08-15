@@ -37,7 +37,11 @@ TOKEN_URL = f"{API_BASE}/oauth/token"
 WORKOUTS_URL = f"{API_BASE}/v1/workouts"
 
 SCOPES = "user_read workouts_read offline_data"
-DEFAULT_REDIRECT_URI = "http://localhost"
+# https, because Wahoo's developer portal expects it -- an `http://` redirect URI
+# is not usable there, localhost included. Nothing has to listen at this address:
+# the authorization code is read out of the failed page's address bar by hand. It
+# only has to match the URI registered for the application, exactly.
+DEFAULT_REDIRECT_URI = "https://localhost"
 
 # Refresh this many seconds before the access token actually expires, so a slow
 # run cannot have its token expire mid-flight.
@@ -48,6 +52,13 @@ _PER_PAGE = 30
 _MAX_PAGES = 100
 _TIMEOUT = 30
 
+# Wahoo limits the Cloud API to applications it has approved, and says so in the
+# body of a 422. An unapproved application still authorizes users and still gets
+# working tokens, so the failure only appears here, on the first real call --
+# where a bare "422 Unprocessable Content" reads like a malformed query and
+# sends the operator looking at the wrong thing entirely.
+_NOT_APPROVED = "has not been approved"
+
 
 def _write_tokens(path: str, tokens: dict) -> None:
     """Write the token file atomically, so a crash cannot truncate it."""
@@ -56,6 +67,25 @@ def _write_tokens(path: str, tokens: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(tokens, f, indent=2)
     os.replace(tmp, path)
+
+
+def _error_message(response: requests.Response) -> str:
+    """Pull Wahoo's own words out of a failed response.
+
+    Wahoo answers errors with `{"error": "..."}`, which `raise_for_status()`
+    discards -- it reports only the status line.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        message = payload.get("error") or payload.get("errors") or payload.get("message")
+        if message:
+            return str(message)
+
+    return str(response.text or "").strip()[:200] or "no response body"
 
 
 def _token_response_to_tokens(payload: dict) -> dict:
@@ -152,7 +182,7 @@ class WahooTracker(Tracker):
         )
         if response.status_code >= 400:
             raise TrackerAuthError(
-                f"Wahoo token refresh failed ({response.status_code}). "
+                f"Wahoo token refresh failed ({response.status_code}): {_error_message(response)}. "
                 f"Run `python -m src.setup wahoo` to authorize again."
             )
 
@@ -167,6 +197,40 @@ class WahooTracker(Tracker):
         headers = {"Authorization": f"Bearer {self._access_token()}"}
         return self.session.get(url, headers=headers, timeout=_TIMEOUT, **kwargs)
 
+    @staticmethod
+    def _raise_for_error(response: requests.Response) -> None:
+        """Turn a failed API response into an exception that names the cause.
+
+        Two of these end the run for this tracker rather than being reported as
+        a generic failure: an application Wahoo has not approved, and a token
+        the API rejects. Both need an operator, and neither is fixed by waiting
+        for the next scheduled run.
+        """
+        if response.status_code < 400:
+            return
+
+        message = _error_message(response)
+
+        if _NOT_APPROVED in message:
+            raise TrackerAuthError(
+                f"Wahoo refused the request ({response.status_code}): {message}. "
+                "The tokens are fine -- it is the application that lacks Cloud API access. "
+                "Request it at https://developer.wahoo.com/applications. Running "
+                "`python -m src.setup wahoo` again will not help and leaves another unrevoked "
+                "access token against the 10-token limit."
+            )
+
+        if response.status_code in (401, 403):
+            raise TrackerAuthError(
+                f"Wahoo rejected the access token ({response.status_code}): {message}. "
+                "Run `python -m src.setup wahoo` to authorize again."
+            )
+
+        raise requests.HTTPError(
+            f"Wahoo API request to {response.url} failed ({response.status_code}): {message}",
+            response=response,
+        )
+
     def list_activities(self, start_date: str, end_date: str) -> list[Activity]:
         """List workouts in the date range.
 
@@ -177,7 +241,7 @@ class WahooTracker(Tracker):
 
         for page in range(1, _MAX_PAGES + 1):
             response = self._get(WORKOUTS_URL, params={"page": page, "per_page": _PER_PAGE})
-            response.raise_for_status()
+            self._raise_for_error(response)
             workouts = response.json().get("workouts", [])
             if not workouts:
                 break
@@ -285,3 +349,13 @@ class WahooTracker(Tracker):
 
         print(f"\nTokens saved to {token_path}")
         print("You can now run the container in headless mode.")
+        # Valid tokens are not enough on their own, and nothing here can tell
+        # whether the application is approved -- only an API call reveals that,
+        # and making one now would spend a token to learn it.
+        print(
+            "\nIf a run then fails with 422 and 'This application has not been approved',\n"
+            "the tokens are fine and the application is not: Wahoo limits the Cloud API to\n"
+            "approved applications. Request approval at https://developer.wahoo.com/applications\n"
+            "and wait for it. Running this setup again cannot fix it, and each run holds one\n"
+            "more of your 10 access tokens."
+        )
