@@ -131,7 +131,8 @@ The tests use no network and no real credentials. [tests/conftest.py](tests/conf
 - `mock_garmin`, a `garminconnect` client mock.
 - Sample GPX, TCX, and FIT-zip payloads, and sample Wahoo JSON.
 
-- `no_real_sleep`, an autouse fixture that replaces `src.ratelimit.time.sleep`. **The retries and the pacing stay real in the tests, and only the waits are removed.** Without it the Wahoo retry tests take 30 seconds each. A test that must see the waits passes its own `sleep` and `clock` to `RateLimiter`, as `tests/test_ratelimit.py` does with `FakeClock`.
+- `fake_time`, an autouse fixture that replaces the whole `src.ratelimit.time` reference with a clock that moves only when something sleeps. **It must replace `sleep` and `monotonic` together.** A no-op `sleep` beside a real clock leaves the time unchanged after a wait, so the windows never bind, the limiter admits more requests than a published limit allows, and no test can see it. Without the fixture the Wahoo retry tests take 30 seconds each.
+- `clean_rate_limit_env`, an autouse fixture that hides the rate limit variables of the real environment. The shared names (`MAX_RETRIES`, `BACKOFF_MAX`) are generic enough to sit in a developer shell already. It lists the exact names that `load_policy` reads, because a match on the suffix alone would also delete `DATABASE_MAX_WAIT` and its like.
 
 Wahoo tests mock at the `requests.Session` level. When you change download logic, update `_DL_FORMATS` and the matching sample payloads and zip builders in conftest together. Give every mocked response a real `headers` dict: a bare `MagicMock` answers `headers.get()` with another mock, and the rate limit headers then read as something they are not.
 

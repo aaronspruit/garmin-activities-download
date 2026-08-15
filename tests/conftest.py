@@ -1,7 +1,6 @@
 """Shared test fixtures."""
 
 import io
-import os
 import zipfile
 from unittest.mock import MagicMock
 
@@ -9,6 +8,7 @@ import garminconnect
 import pytest
 
 from src.ratelimit import RateLimitPolicy
+from src.trackers import TRACKER_CLASSES
 from src.trackers.base import Activity, Tracker
 
 SAMPLE_ACTIVITY = {
@@ -172,28 +172,58 @@ _RATE_LIMIT_VARS = (
     "BACKOFF_MAX",
     "RATE_LIMIT_MAX_WAIT",
 )
-_RATE_LIMIT_SUFFIXES = _RATE_LIMIT_VARS + ("RATE_LIMIT", "MIN_INTERVAL", "MAX_WAIT")
+# The per-tracker form of `RATE_LIMIT_MAX_WAIT` is `<TRACKER>_MAX_WAIT`, so the
+# shared name is dropped and `MAX_WAIT` is added below.
+_TRACKER_SUFFIXES = _RATE_LIMIT_VARS[:-1] + ("RATE_LIMIT", "MIN_INTERVAL", "MAX_WAIT")
+
+# The exact names that `load_policy` reads, and nothing else. A predicate on the
+# suffix alone would also delete `DATABASE_MAX_WAIT` and its like.
+_RATE_LIMIT_ENV = set(_RATE_LIMIT_VARS) | {
+    f"{name.upper().replace('-', '_')}_{suffix}" for name in TRACKER_CLASSES for suffix in _TRACKER_SUFFIXES
+}
 
 
 @pytest.fixture(autouse=True)
 def clean_rate_limit_env(monkeypatch):
     """Hide any rate limit variable of the real environment from the tests.
 
-    A test that wants one sets it with `monkeypatch.setenv`.
+    The shared names are generic enough to exist already in a developer shell or
+    in a devcontainer `.env`, and a leaked value changes a policy that a test
+    asserts on. A test that wants one sets it with `monkeypatch.setenv`.
     """
-    for name in list(os.environ):
-        if name in _RATE_LIMIT_VARS or any(name.endswith(f"_{suffix}") for suffix in _RATE_LIMIT_SUFFIXES):
-            monkeypatch.delenv(name, raising=False)
+    for name in _RATE_LIMIT_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+class FakeTime:
+    """A clock that only moves when something sleeps.
+
+    `src.ratelimit` reads `time.sleep` and `time.monotonic` at each call, so
+    replacing the whole module reference reaches a limiter that already exists.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 @pytest.fixture(autouse=True)
-def no_real_sleep(monkeypatch):
-    """Make every rate limit wait instant.
+def fake_time(monkeypatch):
+    """Make every rate limit wait instant, and still let the clock pass.
 
-    The retries and the pacing are real in the tests, but the waits are not. A
-    test that must see the waits passes its own `sleep` to `RateLimiter`.
+    The retries and the pacing stay real. Only the waiting is removed. A no-op
+    `sleep` with a real clock would leave the time unchanged after a wait, so a
+    limiter would admit more requests than its windows allow and no test could
+    see it.
     """
-    monkeypatch.setattr("src.ratelimit.time.sleep", lambda seconds: None)
+    clock = FakeTime()
+    monkeypatch.setattr("src.ratelimit.time", clock)
+    return clock
 
 
 @pytest.fixture

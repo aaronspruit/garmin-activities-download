@@ -411,3 +411,33 @@ class TestDescribe:
 
     def test_it_reports_no_windows_in_words(self):
         assert "windows=none" in RateLimitPolicy(windows=()).describe()
+
+
+class TestSharedFixture:
+    """The autouse fixture must remove the waiting without removing the pacing."""
+
+    def test_the_windows_still_bind(self, fake_time):
+        limiter = RateLimiter(RateLimitPolicy(windows=(Window(3, 60),), min_interval=0.0, max_wait=300.0))
+        start = fake_time.now
+
+        for _ in range(4):
+            limiter.acquire()
+
+        # The fourth request waits for the first to leave the window. A no-op
+        # sleep with a real clock would leave this at 0 and admit all four.
+        assert fake_time.now - start == 60.0
+
+    def test_the_minimum_interval_still_binds(self, fake_time):
+        limiter = RateLimiter(RateLimitPolicy(windows=(), min_interval=2.0, max_wait=300.0))
+        start = fake_time.now
+
+        limiter.acquire()
+        limiter.acquire()
+
+        assert fake_time.now - start == 2.0
+
+    def test_the_environment_cannot_change_a_policy(self, monkeypatch):
+        """A leaked shared variable must not reach `load_policy`."""
+        default = RateLimitPolicy(max_retries=1)
+
+        assert load_policy("garmin", default) is default
