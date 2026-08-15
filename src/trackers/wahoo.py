@@ -17,12 +17,12 @@ and ten such runs lock the user out. Therefore this module refreshes lazily, at
 the first API call, and never in `authenticate`. To recover from a lockout, send
 `DELETE https://api.wahooligan.com/v1/permissions` and run the setup again.
 
-Wahoo publishes its rate limits, and it applies a different set to a sandbox
-application and to an approved production one. It exempts the authentication,
-the token refresh, and the file downloads from those limits, so only the workout
-list pages spend the budget of a run. Every response also carries the current
-count in its headers, which this module reads. The headers are the truth, and
-the counters in `RateLimiter` are only a local estimate of it.
+Wahoo publishes its rate limits, and it applies a different set to each tier of
+application registration. It exempts the authentication, the token refresh, and
+the file downloads from those limits, so only the workout list pages spend the
+budget of a run. Every response also carries the current count in its headers,
+which this module reads. The headers are the truth, and the counters in
+`RateLimiter` are only a local estimate of it.
 """
 
 import json
@@ -35,7 +35,7 @@ from dataclasses import replace
 import requests
 
 from src.env import read_secret
-from src.ratelimit import RateLimitError, RateLimitPolicy, TransientError, Window
+from src.ratelimit import BudgetExhaustedError, RateLimitError, RateLimitPolicy, TransientError, Window
 from src.trackers.base import Activity, ActivityDownloadError, Tracker, TrackerAuthError
 
 logger = logging.getLogger(__name__)
@@ -69,12 +69,15 @@ _TIMEOUT = 30
 _NOT_APPROVED = "has not been approved"
 
 # Published at https://cloud-api.wahooligan.com/ as three windows: 5 minutes,
-# one hour, and one day. A sandbox application gets the low set, and Wahoo
-# raises it to the high set when it approves the application for production.
+# one hour, and one day.
 #
-# The sandbox set is the default, because that is what a new registration gets
-# and because an application that is not approved cannot call the API at all.
-# Set `WAHOO_APP_TIER=production` after Wahoo approves the application.
+# The tier is a property of the application registration. You choose sandbox or
+# production when you request the application, and Wahoo approves that request.
+# An application does not move from one tier to the other, so this value matches
+# the registration and never changes on its own.
+#
+# Sandbox is the default, because this container serves one person and the
+# sandbox limits are enough for that.
 _RATE_LIMITS = {
     "sandbox": (Window(25, 300), Window(100, 3600), Window(250, 86400)),
     "production": (Window(200, 300), Window(1000, 3600), Window(5000, 86400)),
@@ -355,11 +358,27 @@ class WahooTracker(Tracker):
 
         Wahoo has no date filter. It returns workouts sorted by `starts`,
         newest first, so we page until we pass the start of the range.
+
+        **A rate limit on page N keeps pages 1 to N-1.** Only the list spends
+        the budget here, and the files are exempt, so a run that lists half the
+        window still downloads every activity it found. Discarding the pages
+        would spend the whole budget of the run and write nothing, and the next
+        run would start at page 1 and reach the same limit again.
         """
         activities: list[Activity] = []
 
         for page in range(1, _MAX_PAGES + 1):
-            response = self._get(WORKOUTS_URL, params={"page": page, "per_page": _PER_PAGE})
+            try:
+                response = self._get(WORKOUTS_URL, params={"page": page, "per_page": _PER_PAGE})
+            except BudgetExhaustedError as e:
+                logger.warning(
+                    "Wahoo rate limit reached at page %d. Keeping the %d workouts already listed: %s",
+                    page,
+                    len(activities),
+                    e,
+                )
+                break
+
             workouts = response.json().get("workouts", [])
             if not workouts:
                 break

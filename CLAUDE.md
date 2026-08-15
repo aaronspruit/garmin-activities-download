@@ -101,7 +101,11 @@ Garmin holds no special position in the code. It is one implementation of the `T
 
 `/v1/workouts` has no date filter, so `list_activities` pages through `starts`-descending results until it passes the cutoff.
 
-Wahoo publishes its limits, in two tiers. `_RATE_LIMITS` holds both, and `WAHOO_APP_TIER` picks one. **Sandbox is the default**, because that is what a new registration gets. Wahoo exempts the authentication, the token refresh, and the file downloads, so `_get()` is counted and `download()` uses `limiter.retry()` instead. Every response also carries `X-RateLimit-Remaining` and `X-RateLimit-Reset`, which `_sync_limits()` reads. **The headers are the truth and the local counters are only an estimate**, because they miss the requests of an earlier run and of any other client of the same application.
+Wahoo publishes its limits, in two tiers. `_RATE_LIMITS` holds both, and `WAHOO_APP_TIER` picks one. The tier belongs to the application registration: the operator asks Wahoo for a sandbox or a production application, and an approved application stays in the tier it was asked for. **The tier is therefore a fact about the registration, not a state that approval changes.** Sandbox is the default, because this container serves one person.
+
+Wahoo exempts the authentication, the token refresh, and the file downloads, so `_get()` is counted and `download()` uses `limiter.retry()` instead. Every response also carries `X-RateLimit-Remaining` and `X-RateLimit-Reset`, which `_sync_limits()` reads. **The headers are the truth and the local counters are only an estimate**, because they miss the requests of an earlier run and of any other client of the same application.
+
+**`list_activities()` keeps the pages it already read when a limit stops it.** Only the list spends budget, so a partial list still downloads every activity it found. Discarding the pages would spend the whole budget of a run and write nothing, and the next run would start at page 1 and stop in the same place.
 
 ### Setup and the main entrypoint
 

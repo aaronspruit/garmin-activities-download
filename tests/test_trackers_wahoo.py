@@ -16,7 +16,7 @@ import requests
 
 from src.ratelimit import BudgetExhaustedError, RateLimitError, TransientError, Window
 from src.trackers.base import Activity, ActivityDownloadError, TrackerAuthError
-from src.trackers.wahoo import WahooTracker
+from src.trackers.wahoo import WORKOUTS_URL, WahooTracker
 from tests.conftest import (
     SAMPLE_WAHOO_TOKEN_RESPONSE,
     SAMPLE_WAHOO_TOKENS,
@@ -506,7 +506,7 @@ class TestRateLimit:
 
         assert [a.id for a in activities] == ["4471"]
 
-    def test_a_429_with_a_long_reset_stops_the_run(self, tmp_path):
+    def test_a_429_with_a_long_reset_stops_the_request(self, tmp_path):
         """A daily limit resets in hours, which must not hold the container open."""
         tracker = self._ready(tmp_path)
         response = _response(status_code=429, json_body={"error": "daily limit"})
@@ -514,7 +514,7 @@ class TestRateLimit:
         tracker.session.get.return_value = response
 
         with pytest.raises(BudgetExhaustedError, match="41220s"):
-            tracker.list_activities("2026-08-06", "2026-08-13")
+            tracker._get(WORKOUTS_URL)
 
     def test_it_waits_when_the_headers_report_an_empty_window(self, tmp_path):
         tracker = self._ready(tmp_path)
@@ -583,3 +583,29 @@ class TestRateLimit:
 
         # An empty window with no readable reset gives no wait to obey.
         assert tracker.limiter._blocked_until == 0.0
+
+    def test_a_limit_while_paging_keeps_the_earlier_pages(self, tmp_path):
+        """A run that lists half the window still downloads what it found."""
+        tracker = self._ready(tmp_path)
+        old = {**SAMPLE_WAHOO_WORKOUT, "id": 4470, "starts": "2026-08-11T06:00:00.000Z"}
+        full_page = [{**SAMPLE_WAHOO_WORKOUT, "id": 4000 + n} for n in range(30)]
+        blocked = _response(status_code=429, json_body={"error": "daily limit"})
+        blocked.headers = {"X-RateLimit-Reset": "41220"}
+        tracker.session.get.side_effect = [
+            _response(json_body={"workouts": full_page}),
+            blocked,
+        ]
+
+        activities = tracker.list_activities("2026-08-06", "2026-08-13")
+
+        # The first page survives instead of being thrown away with the budget.
+        assert len(activities) == 30
+        assert old["id"] not in [a.id for a in activities]
+
+    def test_a_limit_on_the_first_page_lists_nothing(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        blocked = _response(status_code=429, json_body={"error": "daily limit"})
+        blocked.headers = {"X-RateLimit-Reset": "41220"}
+        tracker.session.get.return_value = blocked
+
+        assert tracker.list_activities("2026-08-06", "2026-08-13") == []

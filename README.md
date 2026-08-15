@@ -110,29 +110,21 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 | `STATE_DIR` | `<OUTPUT_DIR>/.state` | Path where the container writes the deduplication markers. One empty marker for each activity file |
 | `DOWNLOAD_TARGETS` | `FIT` | Comma-separated list of destinations. Each entry is `FIT`, `GPX`, or `TCX`, or `folder=FORMAT+FORMAT` |
 | `<TRACKER>_DOWNLOAD_TARGETS` | — | Destinations for one tracker only, for example `GARMIN_DOWNLOAD_TARGETS`. Replaces `DOWNLOAD_TARGETS` for that tracker |
-| `WAHOO_APP_TIER` | `sandbox` | Rate limits that Wahoo applies to your application. Set it to `production` after Wahoo approves the application |
+| `WAHOO_APP_TIER` | `sandbox` | Tier of your Wahoo application registration, `sandbox` or `production`. Set it to the tier that you asked Wahoo for. Read [Rate limits](#rate-limits) |
 
-Five more variables control the rate limits. Each applies to every tracker, and
-each has a form for one tracker that replaces it. Read [Rate limits](#rate-limits).
+Seven more variables control the rate limits. Read [Rate limits](#rate-limits).
 
-| Variable | Form for one tracker | Default | Description |
-|----------|----------------------|---------|--------------|
-| `MAX_DOWNLOADS_PER_RUN` | `<TRACKER>_MAX_DOWNLOADS_PER_RUN` | unlimited | Number of files that one run writes before it stops. `0` removes the cap. The run counts between activities, so it can pass this number and keep all formats of one activity together |
+| Variable for every tracker | Variable for one tracker | Default | Description |
+|----------------------------|--------------------------|---------|--------------|
+| `MAX_DOWNLOADS_PER_RUN` | `<TRACKER>_MAX_DOWNLOADS_PER_RUN` | `0` | Number of files that one run writes before it stops. `0` removes the cap. It counts files, not activities, so an activity with 3 formats counts 3 times. The run compares the count between activities, so the last activity writes all of its formats and the run can finish above this number |
 | `RATE_LIMIT_MAX_WAIT` | `<TRACKER>_MAX_WAIT` | `300` | Longest single wait in seconds that a run accepts. A longer wait stops the run |
 | `MAX_RETRIES` | `<TRACKER>_MAX_RETRIES` | 2 for `garmin`, 3 for `wahoo` | Number of retries after a request fails |
 | `BACKOFF_INITIAL` | `<TRACKER>_BACKOFF_INITIAL` | 30 for `garmin`, 5 for `wahoo` | Delay in seconds before the first retry. It doubles for each retry that follows |
 | `BACKOFF_MAX` | `<TRACKER>_BACKOFF_MAX` | `300` | Largest delay in seconds that the backoff produces |
+| — | `<TRACKER>_RATE_LIMIT` | see [Rate limits](#rate-limits) | Limits of that API, as `REQUESTS/SECONDS` entries, for example `20/60, 300/3600`. The value `none` removes every limit |
+| — | `<TRACKER>_MIN_INTERVAL` | 2 for `garmin`, 0.5 for `wahoo` | Smallest gap in seconds between two requests to that tracker |
 
-The name of the max-wait form is `<TRACKER>_MAX_WAIT`, for example
-`GARMIN_MAX_WAIT`. It does not repeat the `RATE_LIMIT_` part.
-
-Two more variables describe the API of one tracker, so they have no form that
-applies to every tracker.
-
-| Variable | Description |
-|----------|--------------|
-| `<TRACKER>_RATE_LIMIT` | Limits of that API, as `REQUESTS/SECONDS` entries, for example `20/60, 300/3600`. The value `none` removes every limit |
-| `<TRACKER>_MIN_INTERVAL` | Smallest gap in seconds between two requests to that tracker |
+The last two describe the API of one tracker, so they have no form for every tracker.
 
 A typical `.env`:
 
@@ -328,6 +320,8 @@ Where the run stops decides what it can report. If a limit stops a download, the
 
 An early stop is a success, and the exit code stays `0`. Every file that the run wrote already has its marker, so the next scheduled run continues at the same activity. An account with thousands of activities therefore fills across several runs.
 
+`RATE_LIMIT_MAX_WAIT` bounds one wait, not the run. A retry waits for the backoff, and the backoff never grows above `BACKOFF_MAX`, so a run stops on a retry only when `BACKOFF_MAX` is larger than `RATE_LIMIT_MAX_WAIT`. With the default values the two are equal, and a run therefore stops for one reason only: a window that is full, or a wait that the tracker itself asked for. The retries then end after `MAX_RETRIES`, which bounds the run at `MAX_RETRIES` × `BACKOFF_MAX` seconds for each request.
+
 ### The limits of each tracker
 
 | Tracker | Limits | Source | What counts |
@@ -336,14 +330,18 @@ An early stop is a success, and the exit code stays `0`. Every file that the run
 | `wahoo`, `sandbox` | 25 requests per 5 minutes, 100 per hour, 250 per day | Published by Wahoo | The workout list only |
 | `wahoo`, `production` | 200 requests per 5 minutes, 1000 per hour, 5000 per day | Published by Wahoo | The workout list only |
 
+The Wahoo tier belongs to the application registration. You ask Wahoo for a sandbox application or for a production application, and Wahoo approves that request. An application stays in the tier that you asked for. Set `WAHOO_APP_TIER` to that tier once, and leave it. Sandbox is the default, and the sandbox limits are enough for one person.
+
 Wahoo exempts the authentication, the token refresh, and the file downloads from its limits. A Wahoo run therefore spends its budget on the list pages alone, and it downloads the files at full speed. Wahoo also reports the count that is left in the headers of each response, and the container obeys those headers.
+
+One Wahoo list page holds 30 workouts, and the container reads at most 100 pages. A window of 3000 workouts therefore costs 100 requests to list, which is the whole hourly budget of a sandbox application. If a limit stops the list at page 50, the container keeps the 1500 workouts of pages 1 to 49 and downloads them, because the files cost nothing. The run is never wasted. A window that needs more pages than the budget allows is still a problem, because each run starts the list again at page 1. To fill a long history, raise `DAYS_BACK` in steps instead of in one jump.
 
 Garmin publishes nothing, so its numbers are a judgement, not a fact. They are low on purpose. A Garmin refusal applies to the account, not to the address, and it has locked users out for 24 to 48 hours. Watch your own account for some weeks, then raise the numbers with `GARMIN_RATE_LIMIT` if you need a faster backfill.
 
 ### To change the limits
 
 ```dotenv
-# Wahoo approved the application, so use the higher published set.
+# The Wahoo application is registered as a production application.
 WAHOO_APP_TIER=production
 
 # Garmin accepts more than the default on this account.
