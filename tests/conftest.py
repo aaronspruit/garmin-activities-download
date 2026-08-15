@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import garminconnect
 import pytest
 
+from src.ratelimit import RateLimitPolicy
 from src.trackers.base import Activity, Tracker
 
 SAMPLE_ACTIVITY = {
@@ -130,12 +131,17 @@ class FakeTracker(Tracker):
 
     name = "fake"
     supported_formats = frozenset({"FIT", "GPX", "TCX"})
+    # No windows and no spacing, so a downloader test never waits. A test that
+    # needs a limit passes its own policy.
+    rate_limit = RateLimitPolicy(windows=(), min_interval=0.0)
 
-    def __init__(self, activities=None, data=SAMPLE_GPX):
+    def __init__(self, activities=None, data=SAMPLE_GPX, rate_limit=None):
         # Instance attributes shadow the methods below, so tests can assert on
         # call counts and arguments exactly as they would with a MagicMock.
         self.list_activities = MagicMock(return_value=list(activities if activities is not None else [ACTIVITY]))
         self.download = MagicMock(return_value=data)
+        if rate_limit is not None:
+            self.rate_limit = rate_limit
 
     @classmethod
     def from_env(cls, tokens_dir):
@@ -153,6 +159,16 @@ class FakeTracker(Tracker):
     @classmethod
     def interactive_setup(cls, tokens_dir):  # pragma: no cover - not used in tests
         raise NotImplementedError
+
+
+@pytest.fixture(autouse=True)
+def no_real_sleep(monkeypatch):
+    """Make every rate limit wait instant.
+
+    The retries and the pacing are real in the tests, but the waits are not. A
+    test that must see the waits passes its own `sleep` to `RateLimiter`.
+    """
+    monkeypatch.setattr("src.ratelimit.time.sleep", lambda seconds: None)
 
 
 @pytest.fixture

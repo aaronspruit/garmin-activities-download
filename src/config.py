@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 
+from src.ratelimit import load_policy
 from src.trackers import TRACKER_CLASSES
 
 logger = logging.getLogger(__name__)
@@ -314,12 +315,25 @@ def _load_download_targets(trackers: list[str], output_dir: str) -> dict[str, li
     return resolved
 
 
+def _validate_rate_limits(trackers: list[str]) -> None:
+    """Stop at startup on a rate limit variable that cannot be used.
+
+    Each tracker builds its own limiter later, with the same function. This call
+    adds nothing to the configuration. It only makes a typo in
+    `<TRACKER>_RATE_LIMIT` stop the run before the first request, which is what
+    every other variable already does.
+    """
+    for name in trackers:
+        load_policy(name, TRACKER_CLASSES[name].rate_limit)
+
+
 def load_config() -> Config:
     """Load configuration from environment variables and Docker secrets."""
     output_dir = os.environ.get("OUTPUT_DIR", "/app/data")
     trackers = _parse_trackers(os.environ.get("TRACKERS", "garmin"))
     download_targets = _load_download_targets(trackers, output_dir)
     _assert_within(output_dir, download_targets)
+    _validate_rate_limits(trackers)
 
     return Config(
         trackers=trackers,

@@ -3,9 +3,10 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from garminconnect import Garmin, GarminConnectAuthenticationError
+from garminconnect import Garmin, GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
 
-from src.trackers.base import ActivityDownloadError, TrackerAuthError
+from src.ratelimit import RateLimitError, Window
+from src.trackers.base import Activity, ActivityDownloadError, TrackerAuthError
 from src.trackers.garmin import GarminTracker
 from tests.conftest import (
     SAMPLE_ACTIVITY,
@@ -173,3 +174,89 @@ class TestDownload:
 class TestSupportedFormats:
     def test_supports_all_three_formats(self):
         assert GarminTracker.supported_formats == {"FIT", "GPX", "TCX"}
+
+
+class TestRateLimit:
+    """Garmin publishes no limits, so the defaults are a conservative guess."""
+
+    def _ready(self, mock_garmin):
+        tracker = GarminTracker(tokenstore="/tmp/tokens")
+        tracker.client = mock_garmin
+        return tracker
+
+    def test_the_default_is_slow(self):
+        assert GarminTracker.rate_limit.windows == (Window(20, 60), Window(300, 3600), Window(2000, 86400))
+        assert GarminTracker.rate_limit.min_interval == 2.0
+
+    def test_an_environment_variable_replaces_it(self, monkeypatch):
+        monkeypatch.setenv("GARMIN_RATE_LIMIT", "60/60")
+        monkeypatch.setenv("GARMIN_MIN_INTERVAL", "0.5")
+
+        tracker = GarminTracker.from_env("/app/tokens")
+
+        assert tracker.limiter.policy.windows == (Window(60, 60.0),)
+        assert tracker.limiter.policy.min_interval == 0.5
+
+    def test_listing_spends_the_budget(self, mock_garmin):
+        tracker = self._ready(mock_garmin)
+
+        tracker.list_activities("2026-07-01", "2026-07-20")
+
+        assert tracker.limiter.requests == 1
+
+    def test_every_download_spends_the_budget(self, mock_garmin):
+        """Unlike Wahoo, Garmin serves the files itself and counts them."""
+        tracker = self._ready(mock_garmin)
+
+        tracker.download(Activity(id="1", name="Run"), "GPX")
+        tracker.download(Activity(id="2", name="Ride"), "GPX")
+
+        assert tracker.limiter.requests == 2
+
+    def test_a_rate_limit_refusal_is_retried(self, mock_garmin):
+        tracker = self._ready(mock_garmin)
+        mock_garmin.get_activities_by_date.side_effect = [
+            GarminConnectTooManyRequestsError("429"),
+            [SAMPLE_ACTIVITY],
+        ]
+
+        activities = tracker.list_activities("2026-07-01", "2026-07-20")
+
+        assert [a.id for a in activities] == ["19876543210"]
+
+    def test_it_stops_after_the_last_retry(self, mock_garmin):
+        tracker = self._ready(mock_garmin)
+        mock_garmin.download_activity.side_effect = GarminConnectTooManyRequestsError("429")
+
+        with pytest.raises(RateLimitError, match="rate limit"):
+            tracker.download(Activity(id="1", name="Run"), "GPX")
+
+        # The first attempt, then the two retries that the policy allows.
+        assert mock_garmin.download_activity.call_count == 3
+
+    def test_a_login_refusal_does_not_try_the_credentials(self):
+        """A second login after a 429 only makes the account lockout longer."""
+        with patch("src.trackers.garmin.Garmin") as mock_garmin_cls:
+            instance = MagicMock()
+            instance.login.side_effect = GarminConnectTooManyRequestsError("429")
+            mock_garmin_cls.return_value = instance
+
+            tracker = GarminTracker(tokenstore="/tmp/tokens", email="a@b.c", password="pass")
+
+            with pytest.raises(TrackerAuthError, match="rate limit"):
+                tracker.authenticate()
+
+            # Three login attempts from the retries, and no second client for
+            # the credential fallback.
+            assert mock_garmin_cls.call_count == 1
+
+    def test_a_login_refusal_names_the_wait(self):
+        with patch("src.trackers.garmin.Garmin") as mock_garmin_cls:
+            instance = MagicMock()
+            instance.login.side_effect = GarminConnectTooManyRequestsError("429")
+            mock_garmin_cls.return_value = instance
+
+            tracker = GarminTracker(tokenstore="/tmp/tokens")
+
+            with pytest.raises(TrackerAuthError, match="Do not log in again"):
+                tracker.authenticate()

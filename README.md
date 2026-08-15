@@ -110,6 +110,22 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 | `STATE_DIR` | `<OUTPUT_DIR>/.state` | Path where the container writes the deduplication markers. One empty marker for each activity file |
 | `DOWNLOAD_TARGETS` | `FIT` | Comma-separated list of destinations. Each entry is `FIT`, `GPX`, or `TCX`, or `folder=FORMAT+FORMAT` |
 | `<TRACKER>_DOWNLOAD_TARGETS` | — | Destinations for one tracker only, for example `GARMIN_DOWNLOAD_TARGETS`. Replaces `DOWNLOAD_TARGETS` for that tracker |
+| `MAX_DOWNLOADS_PER_RUN` | unlimited | Largest number of files that one run writes, for every tracker. `0` removes the cap. The run checks this between activities, so all formats of one activity stay together |
+| `RATE_LIMIT_MAX_WAIT` | `300` | Longest single wait in seconds that a run accepts. A longer wait stops the run |
+| `MAX_RETRIES` | see [Rate limits](#rate-limits) | Number of retries after a request fails |
+| `BACKOFF_INITIAL` | see [Rate limits](#rate-limits) | Delay in seconds before the first retry. It doubles for each retry that follows |
+| `BACKOFF_MAX` | see [Rate limits](#rate-limits) | Largest delay in seconds that the backoff produces |
+| `WAHOO_APP_TIER` | `sandbox` | Rate limits that Wahoo applies to your application. Set it to `production` after Wahoo approves the application |
+
+Each tracker has its own limits, so each of the last four variables also has a
+`<TRACKER>_` form that replaces it: `GARMIN_MAX_RETRIES`,
+`WAHOO_MAX_DOWNLOADS_PER_RUN`, and so on. Two more variables describe the API
+itself and have no shared form. Read [Rate limits](#rate-limits).
+
+| Variable | Description |
+|----------|--------------|
+| `<TRACKER>_RATE_LIMIT` | Limits of that API, as `REQUESTS/SECONDS` entries, for example `20/60, 300/3600`. The value `none` removes every limit |
+| `<TRACKER>_MIN_INTERVAL` | Smallest gap in seconds between two requests to that tracker |
 
 A typical `.env`:
 
@@ -297,7 +313,44 @@ If an application reads `<OUTPUT_DIR>` and all its subfolders, set `STATE_DIR` t
 
 The marker makes the activity file itself removable. An application can read a file and then delete it, and the container does not download that file again. If the activity file is in its folder but the marker is absent, the container writes the marker and downloads nothing. To download a file again, delete its marker. Read [You need an activity file again](#you-need-an-activity-file-again).
 
-The downloader waits one second between downloads, to stay below the rate limits of the tracker. This delay is not configurable. If `DAYS_BACK` is large and there are several formats, the first run is slow. Expect approximately one second for each file. The container logs the progress for each activity.
+## Rate limits
+
+Each tracker paces its own requests, retries the failures that pass, and stops the run when it reaches a limit. The container never waits out a long limit. If the next request needs more than `RATE_LIMIT_MAX_WAIT` seconds, the run stops early and writes a log line that names how many activities are left.
+
+An early stop is a success, and the exit code stays `0`. Every file that the run wrote already has its marker, so the next scheduled run continues at the same activity. An account with thousands of activities therefore fills across several runs. Nothing is lost, and no run is longer than one schedule interval.
+
+### The limits of each tracker
+
+| Tracker | Limits | Source | What counts |
+|---------|--------|--------|-------------|
+| `garmin` | 20 requests per minute, 300 per hour, 2000 per day, 2 seconds between requests | A conservative default. Garmin publishes no limit for this API | The login, the activity list, and every file download |
+| `wahoo`, `sandbox` | 25 requests per 5 minutes, 100 per hour, 250 per day | Published by Wahoo | The workout list only |
+| `wahoo`, `production` | 200 requests per 5 minutes, 1000 per hour, 5000 per day | Published by Wahoo | The workout list only |
+
+Wahoo exempts the authentication, the token refresh, and the file downloads from its limits. A Wahoo run therefore spends its budget on the list pages alone, and it downloads the files at full speed. Wahoo also reports the count that is left in the headers of each response, and the container obeys those headers.
+
+Garmin publishes nothing, so its numbers are a judgement, not a fact. They are low on purpose. A Garmin refusal applies to the account, not to the address, and it has locked users out for 24 to 48 hours. Watch your own account for some weeks, then raise the numbers with `GARMIN_RATE_LIMIT` if you need a faster backfill.
+
+### To change the limits
+
+```dotenv
+# Wahoo approved the application, so use the higher published set.
+WAHOO_APP_TIER=production
+
+# Garmin accepts more than the default on this account.
+GARMIN_RATE_LIMIT=40/60, 600/3600, 4000/86400
+GARMIN_MIN_INTERVAL=1.0
+
+# Keep each run inside a 30 minute schedule interval.
+MAX_DOWNLOADS_PER_RUN=400
+RATE_LIMIT_MAX_WAIT=120
+```
+
+An invalid value stops the run with exit code `2`, before the first request.
+
+### To add a tracker
+
+A new tracker gets all of this from one class attribute. Set `rate_limit` on the tracker class to a `RateLimitPolicy` with the published limits of that platform. If the platform publishes none, choose conservative numbers and write a comment that says the numbers are a guess. The operator then gets every `<TRACKER>_` variable above with no other change. Read [CLAUDE.md](CLAUDE.md).
 
 ## Errors and troubleshooting
 
@@ -307,7 +360,7 @@ The container runs on a schedule with no operator, so use the exit code to decid
 
 | Code | Meaning | Action |
 |------|---------|--------|
-| `0` | Success. The container downloaded the new activities, or there was nothing new | None |
+| `0` | Success. The container downloaded the new activities, or there was nothing new, or a rate limit stopped the run early | None. If a rate limit stopped the run, the next run continues. Read [Rate limits](#rate-limits) |
 | `1` | The tracker refused the credentials or the application, and there was no fallback | Read the log line of that tracker. Usually you must run the interactive setup again |
 | `2` | Other error, for example an invalid configuration or a tracker API error | Read the logs. This error is often temporary, and the next scheduled run corrects it |
 | `3` | A tracker returned an activity ID that is not alphanumeric | Read the logs and [Unsafe activity IDs](#unsafe-activity-ids) |

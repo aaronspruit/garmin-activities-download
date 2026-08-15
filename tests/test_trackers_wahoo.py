@@ -8,11 +8,13 @@ behaviour that keeps a scheduled run alive indefinitely.
 
 import json
 import time
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
 import requests
 
+from src.ratelimit import BudgetExhaustedError, TransientError, Window
 from src.trackers.base import Activity, ActivityDownloadError, TrackerAuthError
 from src.trackers.wahoo import WahooTracker
 from tests.conftest import (
@@ -24,11 +26,14 @@ from tests.conftest import (
 )
 
 
-def _response(status_code=200, json_body=None, content=b""):
+def _response(status_code=200, json_body=None, content=b"", headers=None):
     response = MagicMock()
     response.status_code = status_code
     response.json.return_value = json_body if json_body is not None else {}
     response.content = content
+    # A real response always has headers. Without this the mock hands back
+    # another mock, and the rate limit headers read as something they are not.
+    response.headers = headers if headers is not None else {}
     return response
 
 
@@ -314,13 +319,14 @@ class TestApiErrors:
             tracker.list_activities("2026-08-06", "2026-08-13")
 
     def test_falls_back_to_the_raw_body_when_it_is_not_json(self, tmp_path):
+        """A 5xx is temporary, so it retries and then reports with the body."""
         tracker = self._ready(tmp_path)
         response = _response(status_code=502)
         response.json.side_effect = ValueError("not json")
         response.text = "<html>Bad Gateway</html>"
         tracker.session.get.return_value = response
 
-        with pytest.raises(requests.HTTPError, match="Bad Gateway"):
+        with pytest.raises(TransientError, match="Bad Gateway"):
             tracker.list_activities("2026-08-06", "2026-08-13")
 
     def test_reports_an_empty_body_rather_than_nothing(self, tmp_path):
@@ -329,8 +335,30 @@ class TestApiErrors:
         response.text = ""
         tracker.session.get.return_value = response
 
-        with pytest.raises(requests.HTTPError, match="no response body"):
+        with pytest.raises(TransientError, match="no response body"):
             tracker.list_activities("2026-08-06", "2026-08-13")
+
+    def test_a_server_failure_is_retried(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.rate_limit = replace(tracker.rate_limit, max_retries=2)
+        tracker.session.get.return_value = _response(status_code=503, json_body={"error": "unavailable"})
+
+        with pytest.raises(TransientError):
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+        # The first attempt, then two retries.
+        assert tracker.session.get.call_count == 3
+
+    def test_a_server_failure_that_clears_needs_no_second_run(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.session.get.side_effect = [
+            _response(status_code=503, json_body={"error": "unavailable"}),
+            _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]}),
+        ]
+
+        activities = tracker.list_activities("2026-08-06", "2026-08-13")
+
+        assert [a.id for a in activities] == ["4471"]
 
 
 class TestDownload:
@@ -381,3 +409,153 @@ class TestSupportedFormats:
     def test_supports_fit_only(self):
         """Wahoo exposes one activity file per workout, and it is always FIT."""
         assert WahooTracker.supported_formats == {"FIT"}
+
+
+class TestRateLimit:
+    """Wahoo publishes its limits, and every response reports the count left."""
+
+    def _ready(self, tmp_path):
+        _write_tokens(tmp_path)
+        tracker = _tracker(tmp_path)
+        tracker.authenticate()
+        tracker.session.post.return_value = _response(json_body=SAMPLE_WAHOO_TOKEN_RESPONSE)
+        return tracker
+
+    def test_the_sandbox_tier_is_the_default(self, monkeypatch):
+        monkeypatch.setenv("WAHOO_CLIENT_ID", "abc")
+        monkeypatch.setenv("WAHOO_CLIENT_SECRET", "shh")
+        monkeypatch.delenv("WAHOO_APP_TIER", raising=False)
+
+        tracker = WahooTracker.from_env("/app/tokens")
+
+        assert tracker.limiter.policy.windows == (Window(25, 300), Window(100, 3600), Window(250, 86400))
+
+    def test_the_production_tier_raises_the_limits(self, monkeypatch):
+        monkeypatch.setenv("WAHOO_CLIENT_ID", "abc")
+        monkeypatch.setenv("WAHOO_CLIENT_SECRET", "shh")
+        monkeypatch.setenv("WAHOO_APP_TIER", "production")
+
+        tracker = WahooTracker.from_env("/app/tokens")
+
+        assert tracker.limiter.policy.windows == (Window(200, 300), Window(1000, 3600), Window(5000, 86400))
+
+    def test_an_unknown_tier_is_reported(self, monkeypatch):
+        monkeypatch.setenv("WAHOO_CLIENT_ID", "abc")
+        monkeypatch.setenv("WAHOO_CLIENT_SECRET", "shh")
+        monkeypatch.setenv("WAHOO_APP_TIER", "approved")
+
+        with pytest.raises(ValueError, match="WAHOO_APP_TIER"):
+            WahooTracker.from_env("/app/tokens")
+
+    def test_an_environment_variable_replaces_the_tier(self, monkeypatch):
+        monkeypatch.setenv("WAHOO_CLIENT_ID", "abc")
+        monkeypatch.setenv("WAHOO_CLIENT_SECRET", "shh")
+        monkeypatch.setenv("WAHOO_RATE_LIMIT", "10/60")
+
+        tracker = WahooTracker.from_env("/app/tokens")
+
+        assert tracker.limiter.policy.windows == (Window(10, 60.0),)
+
+    def test_listing_spends_the_budget(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]})
+
+        tracker.list_activities("2026-08-06", "2026-08-13")
+
+        assert tracker.limiter.requests == 1
+
+    def test_a_file_download_spends_nothing(self, tmp_path):
+        """Wahoo exempts the file downloads from its rate limits."""
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(content=WAHOO_FIT_CONTENT)
+        activity = Activity(id="4471", name="Ride", payload={"file_url": "https://cdn/4471.fit"})
+
+        tracker.download(activity, "FIT")
+
+        assert tracker.limiter.requests == 0
+
+    def test_a_failed_file_download_is_retried(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.session.get.side_effect = [
+            _response(status_code=503),
+            _response(content=WAHOO_FIT_CONTENT),
+        ]
+        activity = Activity(id="4471", name="Ride", payload={"file_url": "https://cdn/4471.fit"})
+
+        assert tracker.download(activity, "FIT") == WAHOO_FIT_CONTENT
+
+    def test_a_missing_file_is_not_retried(self, tmp_path):
+        """A 404 is permanent, so the run reports it and moves to the next activity."""
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(status_code=404)
+        activity = Activity(id="4471", name="Ride", payload={"file_url": "https://cdn/4471.fit"})
+
+        with pytest.raises(ActivityDownloadError):
+            tracker.download(activity, "FIT")
+
+        assert tracker.session.get.call_count == 1
+
+    def test_a_429_is_retried(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        tracker.session.get.side_effect = [
+            _response(status_code=429, json_body={"error": "too many requests"}),
+            _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]}),
+        ]
+
+        activities = tracker.list_activities("2026-08-06", "2026-08-13")
+
+        assert [a.id for a in activities] == ["4471"]
+
+    def test_a_429_with_a_long_reset_stops_the_run(self, tmp_path):
+        """A daily limit resets in hours, which must not hold the container open."""
+        tracker = self._ready(tmp_path)
+        response = _response(status_code=429, json_body={"error": "daily limit"})
+        response.headers = {"X-RateLimit-Reset": "41220"}
+        tracker.session.get.return_value = response
+
+        with pytest.raises(BudgetExhaustedError, match="41220s"):
+            tracker.list_activities("2026-08-06", "2026-08-13")
+
+    def test_it_waits_when_the_headers_report_an_empty_window(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        response = _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]})
+        response.headers = {"X-RateLimit-Remaining": "200, 40, 0", "X-RateLimit-Reset": "120"}
+        tracker.session.get.return_value = response
+
+        tracker.list_activities("2026-08-06", "2026-08-13")
+
+        # The headers, not the local counters, decide. The next counted request
+        # must now wait for the reset that Wahoo gave.
+        assert tracker.limiter._wait_needed(tracker.limiter._clock()) == pytest.approx(120, abs=1)
+
+    def test_headers_with_room_left_cause_no_wait(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        response = _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]})
+        response.headers = {"X-RateLimit-Remaining": "200, 40, 9", "X-RateLimit-Reset": "120"}
+        tracker.session.get.return_value = response
+
+        tracker.list_activities("2026-08-06", "2026-08-13")
+
+        assert tracker.limiter._blocked_until == 0.0
+
+    def test_unreadable_headers_are_ignored(self, tmp_path):
+        tracker = self._ready(tmp_path)
+        response = _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]})
+        response.headers = {"X-RateLimit-Remaining": "not, a, number", "X-RateLimit-Reset": "120"}
+        tracker.session.get.return_value = response
+
+        activities = tracker.list_activities("2026-08-06", "2026-08-13")
+
+        assert [a.id for a in activities] == ["4471"]
+
+    def test_a_token_refresh_spends_no_budget(self, tmp_path):
+        """Wahoo exempts the token refresh, and a run must not pay for it twice."""
+        tracker = self._ready(tmp_path)
+        tracker.session.get.return_value = _response(json_body={"workouts": [SAMPLE_WAHOO_WORKOUT]})
+
+        tracker.list_activities("2026-08-06", "2026-08-13")
+
+        # One page listed, so one counted request, even though the expired token
+        # forced a refresh first.
+        assert tracker.session.post.call_count == 1
+        assert tracker.limiter.requests == 1

@@ -2,10 +2,10 @@
 
 import logging
 import os
-import time
 from datetime import datetime, timedelta
 
 from src.config import DownloadTarget, default_state_dir
+from src.ratelimit import BudgetExhaustedError
 from src.trackers import FORMAT_EXTENSIONS, ActivityDownloadError, Tracker, UnsafeActivityIdError
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,6 @@ def download_new_activities(
     output_dir: str,
     targets: list[DownloadTarget | str] | None = None,
     days_back: int = 7,
-    download_delay: float = 1.0,
     state_dir: str | None = None,
 ) -> int:
     """Download activity files to one or more destinations, skipping those already saved.
@@ -83,6 +82,13 @@ def download_new_activities(
     (the marker is written, nothing is downloaded), so an install that predates
     the markers does not re-download its whole window once.
 
+    The tracker paces itself, so this loop holds no delay of its own. When the
+    tracker reaches its rate limit, the run stops early and reports how much is
+    left. That is a normal result, not a failure: the markers already record
+    every file that this run wrote, so the next run continues from the same
+    point. An account with thousands of activities therefore drains across
+    several runs instead of failing on the first one.
+
     Args:
         tracker: Authenticated tracker.
         output_dir: Directory under which the target folders are created.
@@ -90,12 +96,12 @@ def download_new_activities(
             save into a folder of the same name. Defaults to FIT into "FIT".
             Formats the tracker does not provide are skipped with a warning.
         days_back: Number of days to look back for activities.
-        download_delay: Seconds to wait between downloads (rate limit protection).
         state_dir: Directory holding the dedup markers. Defaults to
             `<output_dir>/.state`. Delete a marker to download that file again.
 
     Returns:
-        Number of new activity files downloaded.
+        Number of new activity files downloaded, whether the run finished the
+        list or stopped early at the rate limit.
 
     Raises:
         UnsafeActivityIdError: If the tracker returns an activity id that is not
@@ -120,18 +126,33 @@ def download_new_activities(
     start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
     logger.info("[%s] Fetching activities from %s to %s", tracker.name, start_date, end_date)
-    activities = tracker.list_activities(start_date, end_date)
+    try:
+        activities = tracker.list_activities(start_date, end_date)
+    except BudgetExhaustedError as e:
+        logger.warning("[%s] Rate limit reached while listing activities: %s", tracker.name, e)
+        logger.warning("[%s] Downloaded nothing. The next scheduled run starts again", tracker.name)
+        return 0
     logger.info("[%s] Found %d activities in date range", tracker.name, len(activities))
 
+    max_downloads = tracker.limiter.policy.max_downloads
     downloaded = 0
     skipped = 0
+    pending = 0
 
-    for activity in activities:
+    for index, activity in enumerate(activities):
         if not _is_safe_activity_id(activity.id):
             raise UnsafeActivityIdError(
                 f"Tracker {tracker.name} returned a non-alphanumeric activity id {activity.id!r}; "
                 f"refusing to build an output path from it"
             )
+
+        # Checked between activities, not between files, so every format of one
+        # activity lands in the same run. A run can therefore pass the cap by
+        # the number of formats minus one.
+        if max_downloads and downloaded >= max_downloads:
+            pending = len(activities) - index
+            logger.warning("[%s] Reached the limit of %d files for one run", tracker.name, max_downloads)
+            break
 
         for fmt, folders in paths_by_format.items():
             filename = f"{tracker.name}-{activity.id}.{FORMAT_EXTENSIONS[fmt]}"
@@ -165,9 +186,13 @@ def download_new_activities(
                 data = tracker.download(activity, fmt)
             except ActivityDownloadError as e:
                 logger.error("[%s] Skipping %s (%s): %s", tracker.name, activity.id, fmt, e)
-                if download_delay > 0:
-                    time.sleep(download_delay)
                 continue
+            except BudgetExhaustedError as e:
+                # Not an error. Everything this run wrote already has its
+                # marker, so the next run starts at this activity.
+                logger.warning("[%s] Rate limit reached: %s", tracker.name, e)
+                pending = len(activities) - index
+                break
 
             # Marker after the file it stands for: a crash in between leaves a
             # file with no marker, which the next run adopts. The reverse order
@@ -178,8 +203,8 @@ def download_new_activities(
                 _write_marker(marker)
                 downloaded += 1
 
-            if download_delay > 0:
-                time.sleep(download_delay)
+        if pending:
+            break
 
     logger.info(
         "[%s] Download complete: %d new, %d skipped (already existed)",
@@ -187,4 +212,12 @@ def download_new_activities(
         downloaded,
         skipped,
     )
+    if pending:
+        logger.warning(
+            "[%s] Stopped early with %d of %d activities not examined. "
+            "The next scheduled run continues from that point",
+            tracker.name,
+            pending,
+            len(activities),
+        )
     return downloaded
