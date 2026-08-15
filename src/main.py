@@ -5,6 +5,7 @@ import sys
 
 from src.config import load_config
 from src.downloader import download_new_activities
+from src.ratelimit import BudgetExhaustedError
 from src.trackers import TRACKER_CLASSES, TrackerAuthError, UnsafeActivityIdError
 
 logging.basicConfig(
@@ -32,6 +33,7 @@ def _run_tracker(name: str, config) -> tuple[int, int]:
     """Run one tracker. Returns (exit code, files downloaded)."""
     try:
         tracker = TRACKER_CLASSES[name].from_env(config.tokens_dir)
+        logger.info("[%s] Rate limit: %s", name, tracker.limiter.policy.describe())
         tracker.authenticate()
         count = download_new_activities(
             tracker,
@@ -41,6 +43,12 @@ def _run_tracker(name: str, config) -> tuple[int, int]:
             targets=config.download_targets[name],
         )
         return 0, count
+
+    except BudgetExhaustedError as e:
+        # The rate limit stopped the run before it could start. Nothing failed,
+        # and the next scheduled run tries again, so the exit code stays 0.
+        logger.warning("[%s] Rate limit reached before any download: %s", name, e)
+        return 0, 0
 
     except TrackerAuthError as e:
         logger.error("[%s] Authentication failed: %s", name, e)

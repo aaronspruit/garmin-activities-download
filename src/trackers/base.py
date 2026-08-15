@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from src.ratelimit import RateLimiter, RateLimitPolicy, load_policy
+
 # File extension written for each download format. Shared by every tracker --
 # a .fit file is a .fit file wherever it came from.
 FORMAT_EXTENSIONS = {"FIT": "fit", "GPX": "gpx", "TCX": "tcx"}
@@ -59,6 +61,32 @@ class Tracker(ABC):
     #: Which of `FORMAT_EXTENSIONS` this tracker can supply. Requested formats
     #: outside this set are skipped with a warning rather than failing the run.
     supported_formats: ClassVar[frozenset[str]]
+
+    #: How hard a run pushes this API. Every tracker must replace this with the
+    #: published limits of its own platform, or with a conservative guess when
+    #: the platform publishes none. State the source in a comment beside it, so
+    #: a later reader knows whether the numbers are a fact or a judgement.
+    #: `load_policy` then lets an operator override any field with a
+    #: `<TRACKER>_` environment variable, so no tracker parses these itself.
+    #: The default here is deliberately slow: a tracker that forgets to set it
+    #: is protected, not fast.
+    rate_limit: ClassVar[RateLimitPolicy] = RateLimitPolicy()
+
+    #: Built on first use, because a tracker sets its own `rate_limit` (Wahoo
+    #: picks between two published tiers) before anything reads the limiter.
+    _limiter: "RateLimiter | None" = None
+
+    @property
+    def limiter(self) -> RateLimiter:
+        """The rate limiter of this instance.
+
+        Every counted request of a tracker goes through `limiter.call`. A
+        request that the platform exempts from its limits goes through
+        `limiter.retry`, which retries but spends no budget.
+        """
+        if self._limiter is None:
+            self._limiter = RateLimiter(load_policy(self.name, self.rate_limit), name=self.name)
+        return self._limiter
 
     @classmethod
     @abstractmethod

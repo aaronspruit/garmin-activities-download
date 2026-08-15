@@ -1,11 +1,13 @@
 """Tests for the main entry point and exit codes."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.config import Config, DownloadTarget
 from src.main import main
+from src.ratelimit import BudgetExhaustedError
 from src.trackers.base import TrackerAuthError, UnsafeActivityIdError
 
 
@@ -153,3 +155,36 @@ class TestMultipleTrackers:
         mock_download.side_effect = [1, RuntimeError("boom")]
 
         assert main() == 2
+
+
+class TestRateLimitExitCode:
+    """A rate limit is a normal result, so the run reports success."""
+
+    @patch("src.main.download_new_activities")
+    @patch("src.main.load_config")
+    def test_exits_zero_when_the_limit_stops_the_run(self, mock_config, mock_download, registry):
+        mock_config.return_value = _config()
+        mock_download.side_effect = BudgetExhaustedError("no budget left")
+
+        assert main() == 0
+
+    @patch("src.main.download_new_activities")
+    @patch("src.main.load_config")
+    def test_a_limit_on_one_tracker_leaves_the_other_alone(self, mock_config, mock_download, registry):
+        mock_config.return_value = _config(trackers=("garmin", "wahoo"))
+        mock_download.side_effect = [BudgetExhaustedError("no budget left"), 4]
+
+        assert main() == 0
+        assert mock_download.call_count == 2
+
+    @patch("src.main.download_new_activities", return_value=0)
+    @patch("src.main.load_config")
+    def test_it_logs_the_limits_of_each_tracker(self, mock_config, mock_download, registry, caplog):
+        mock_config.return_value = _config()
+        tracker = registry["garmin"].from_env.return_value
+        tracker.limiter.policy.describe.return_value = "windows=20/60s"
+
+        with caplog.at_level(logging.INFO):
+            main()
+
+        assert "windows=20/60s" in caplog.text

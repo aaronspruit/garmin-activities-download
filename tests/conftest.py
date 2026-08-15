@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import garminconnect
 import pytest
 
+from src.ratelimit import RateLimitPolicy
+from src.trackers import TRACKER_CLASSES
 from src.trackers.base import Activity, Tracker
 
 SAMPLE_ACTIVITY = {
@@ -130,12 +132,17 @@ class FakeTracker(Tracker):
 
     name = "fake"
     supported_formats = frozenset({"FIT", "GPX", "TCX"})
+    # No windows and no spacing, so a downloader test never waits. A test that
+    # needs a limit passes its own policy.
+    rate_limit = RateLimitPolicy(windows=(), min_interval=0.0)
 
-    def __init__(self, activities=None, data=SAMPLE_GPX):
+    def __init__(self, activities=None, data=SAMPLE_GPX, rate_limit=None):
         # Instance attributes shadow the methods below, so tests can assert on
         # call counts and arguments exactly as they would with a MagicMock.
         self.list_activities = MagicMock(return_value=list(activities if activities is not None else [ACTIVITY]))
         self.download = MagicMock(return_value=data)
+        if rate_limit is not None:
+            self.rate_limit = rate_limit
 
     @classmethod
     def from_env(cls, tokens_dir):
@@ -153,6 +160,70 @@ class FakeTracker(Tracker):
     @classmethod
     def interactive_setup(cls, tokens_dir):  # pragma: no cover - not used in tests
         raise NotImplementedError
+
+
+# Names that `load_policy` reads. The shared forms are generic enough to exist
+# already in a developer shell or a devcontainer `.env`, and a leaked value
+# changes a policy that a test asserts on.
+_RATE_LIMIT_VARS = (
+    "MAX_DOWNLOADS_PER_RUN",
+    "MAX_RETRIES",
+    "BACKOFF_INITIAL",
+    "BACKOFF_MAX",
+    "RATE_LIMIT_MAX_WAIT",
+)
+# The per-tracker form of `RATE_LIMIT_MAX_WAIT` is `<TRACKER>_MAX_WAIT`, so the
+# shared name is dropped and `MAX_WAIT` is added below.
+_TRACKER_SUFFIXES = _RATE_LIMIT_VARS[:-1] + ("RATE_LIMIT", "MIN_INTERVAL", "MAX_WAIT")
+
+# The exact names that `load_policy` reads, and nothing else. A predicate on the
+# suffix alone would also delete `DATABASE_MAX_WAIT` and its like.
+_RATE_LIMIT_ENV = set(_RATE_LIMIT_VARS) | {
+    f"{name.upper().replace('-', '_')}_{suffix}" for name in TRACKER_CLASSES for suffix in _TRACKER_SUFFIXES
+}
+
+
+@pytest.fixture(autouse=True)
+def clean_rate_limit_env(monkeypatch):
+    """Hide any rate limit variable of the real environment from the tests.
+
+    The shared names are generic enough to exist already in a developer shell or
+    in a devcontainer `.env`, and a leaked value changes a policy that a test
+    asserts on. A test that wants one sets it with `monkeypatch.setenv`.
+    """
+    for name in _RATE_LIMIT_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+class FakeTime:
+    """A clock that only moves when something sleeps.
+
+    `src.ratelimit` reads `time.sleep` and `time.monotonic` at each call, so
+    replacing the whole module reference reaches a limiter that already exists.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture(autouse=True)
+def fake_time(monkeypatch):
+    """Make every rate limit wait instant, and still let the clock pass.
+
+    The retries and the pacing stay real. Only the waiting is removed. A no-op
+    `sleep` with a real clock would leave the time unchanged after a wait, so a
+    limiter would admit more requests than its windows allow and no test could
+    see it.
+    """
+    clock = FakeTime()
+    monkeypatch.setattr("src.ratelimit.time", clock)
+    return clock
 
 
 @pytest.fixture

@@ -4,11 +4,12 @@ Guidance for Claude Code (claude.ai/code) when it works in this repository.
 
 ## Mandatory rules
 
-These two rules are not optional. They apply to every change.
+These four rules are not optional. They apply to every change.
 
 1. **Write all documentation with `/simple-english`.** This covers the README, this file, comments and docstrings, commit messages, pull request titles and bodies, release notes, and messages the operator reads. Invoke the `simple-english` skill first, then write the text. Do not write the text first and clean it up later.
 2. **Breaking-change detail belongs only in the pull request.** Do not put migration steps, upgrade instructions, or "this breaks X" in the README or in this file. Put them in the pull request body, and give the pull request the correct `changelog:` label. The label carries the detail into the release notes. The README and this file describe how the code works now. The release notes are the only record of what changed. A design note can say why the current behavior exists, but it must not tell a user what to do about an older install.
-3. **Comments describe the present, not the past.** Comments in values files, manifests and this file say what the current config does and why. They do **not** narrate what it replaced, what it used to be, which overlay it was migrated off, or what a previous version did differently — `git log`/`git blame` already carry that, and a stale "X still serves Y" line becomes wrong the moment Y changes. When migrating something, write the new file as if it had always been that way, and strip the same kind of history out of any file the change touches. The migration story belongs in the commit message and the PR.
+3. **Comments describe the present, not the past.** A comment says what the current config does and why. It does not say what the config replaced, or what an older version did. `git log` and `git blame` hold that, and a stale "X still serves Y" line is wrong the moment Y changes. When you migrate something, write the new file as if it was always that way, and strip the same kind of history out of every file the change touches. The migration story goes in the commit message and the pull request.
+4. **Write the fewest sentences that carry the fact.** State each fact in one place, and link to that place from anywhere else that needs it. Do not repeat what a linked file already says. Do not write a preamble, a list of what comes next, or a closing restatement. If a section changes nothing about what the operator does, delete the section instead of shortening it.
 
 ## Commands
 
@@ -58,7 +59,17 @@ Garmin holds no special position in the code. It is one implementation of the `T
 - `DOWNLOAD_FORMATS` is deprecated and has its own parser, `_parse_legacy_formats()`. Its `FMT:subfolder` nests under the format, which is the opposite model. Setting both variables raises.
 - **`Config` holds no credentials.** Each tracker reads its own in `from_env()`, so a new tracker never changes this dataclass.
 
-**[src/trackers/base.py](src/trackers/base.py)** — the `Tracker` ABC (`from_env`, `authenticate`, `list_activities`, `download`, `interactive_setup`), the normalized `Activity(id, name, payload)`, `FORMAT_EXTENSIONS`, and the exceptions `TrackerAuthError`, `ActivityDownloadError`, and `UnsafeActivityIdError`. `download()` returns the **final** file bytes, so each tracker unwraps its own archives and the download loop stays generic. `Activity.payload` carries opaque per-tracker data from listing to download, such as the file URL from Wahoo.
+**[src/trackers/base.py](src/trackers/base.py)** — the `Tracker` ABC (`from_env`, `authenticate`, `list_activities`, `download`, `interactive_setup`), the normalized `Activity(id, name, payload)`, `FORMAT_EXTENSIONS`, and the exceptions `TrackerAuthError`, `ActivityDownloadError`, and `UnsafeActivityIdError`. `download()` returns the **final** file bytes, so each tracker unwraps its own archives and the download loop stays generic. `Activity.payload` carries opaque per-tracker data from listing to download, such as the file URL from Wahoo. It also holds the `rate_limit` class attribute and the lazy `limiter` property.
+
+**[src/ratelimit.py](src/ratelimit.py)** — `RateLimitPolicy`, `RateLimiter`, `load_policy`, and the exceptions `RateLimitError`, `TransientError`, and `BudgetExhaustedError`.
+
+- **A tracker declares its limits once, as `rate_limit`, and gets everything else.** Pacing, retries, backoff, the per-run cap, and every `<TRACKER>_` environment variable follow from that one attribute. A new tracker needs no other change. State in a comment whether the numbers are published or a guess.
+- `RateLimiter.call()` counts a request against the windows. `RateLimiter.retry()` retries without counting, for a request the platform exempts. **Only the tracker knows which of its requests count**, so the choice belongs there and nowhere else.
+- Windows are sliding counters, so a burst at the start of a run cannot exceed a published limit.
+- **`BudgetExhaustedError` is not a failure.** A wait longer than `max_wait` raises it, the run stops early, and the exit code stays `0`. The markers make it safe: the next run continues at the same activity. Waiting out a daily limit would hold the container open for hours and overlap the next schedule.
+- `load_policy` reads the environment directly, for the same reason as `env.py`: a loader inside `config.py` would make a `config` → `trackers` → `config` cycle. `load_config` still calls it once for each tracker, so a typo stops the run at startup rather than at the first request.
+- `RateLimiter` resolves `time.sleep` and `time.monotonic` at each call, not at construction, so a test can replace them after a limiter exists. `tests/conftest.py` makes every wait instant with an autouse fixture.
+- [README.md](README.md) holds the variable names, the defaults, and the limits of each tracker. Do not repeat them here.
 
 **[src/trackers/\_\_init\_\_.py](src/trackers/__init__.py)** — `TRACKER_CLASSES`, built from the `_REGISTERED` tuple. **A new tracker is one new module plus one entry here.** Every import must stay free of side effects, because CI smoke-tests the image with `python -c "import src.main"`.
 
@@ -70,9 +81,10 @@ Garmin holds no special position in the code. It is one implementation of the `T
 - An activity file present without its marker is *adopted*. The run writes the marker and downloads nothing.
 - **The marker is written after the file**, so a crash between the two is recoverable.
 - Targets are grouped by format. One format wanted in several folders costs one download for each activity, written to every folder that is still missing it.
-- `download_delay` (1 second by default) protects against rate limits.
+- **The downloader holds no delay of its own.** Pacing belongs to the tracker, which knows its own limits. For a rate limit, the loop catches `BudgetExhaustedError`, records what it wrote, and reports how many activities it did not reach. It still catches `ActivityDownloadError` for one activity that cannot be fetched.
+- `max_downloads` comes from the tracker policy and caps one run. It is checked between activities, so a run can pass it by the number of formats minus one, and all formats of one activity stay together. `0` leaves the windows alone to limit the run, which is the usual case.
 
-**[src/main.py](src/main.py)** — loops over `config.trackers`. **One tracker's failure must not stop the others.** Each tracker is wrapped on its own, and the run exits with the most serious code. The precedence is `3 > 1 > 2 > 0`.
+**[src/main.py](src/main.py)** — loops over `config.trackers`. **One tracker's failure must not stop the others.** Each tracker is wrapped on its own, and the run exits with the most serious code. The precedence is `3 > 1 > 2 > 0`. `BudgetExhaustedError` is caught before the other handlers and gives `0`, because a rate limit defers work and never loses it. A new exit code would make a Kubernetes CronJob report a normal backfill as a failed pod.
 
 [src/env.py](src/env.py) holds `read_secret()`, which reads `/run/secrets/<name lowercased>` first and then the environment variable. It is separate from `config.py` only to break a `config` → `trackers` → `config` import cycle.
 
@@ -80,12 +92,20 @@ Garmin holds no special position in the code. It is one implementation of the `T
 
 **[src/trackers/garmin.py](src/trackers/garmin.py)** — FIT, GPX, and TCX. It tries saved tokens first and falls back to email and password. Both credentials are optional. `_DL_FORMATS` maps a format token to a `garminconnect` enum and a zipped flag. FIT is the special case: Garmin serves it as an `ORIGINAL` zip, so `_extract_fit_bytes()` pulls out the first `.fit` member.
 
+**Garmin publishes no rate limit.** The Connect Developer Program pages state none, and this tracker uses the undocumented consumer web API. `_RATE_LIMIT` is therefore a guess, and it is slow on purpose: a Garmin 429 applies to the account, survives a change of address, and has locked users out for 24 to 48 hours. Everything counts here, the login included. `garminconnect` retries the 5xx and network failures itself and always fails fast on a 429, so `_counted()` only translates the 429 and lets the library keep the rest. **A 429 during `authenticate()` must not fall through to the credential login.** The broad `except Exception` that drives that fallback is for an expired token. A second login after a refusal only makes the lockout longer.
+
 **[src/trackers/wahoo.py](src/trackers/wahoo.py)** — FIT only, over OAuth2. Read the module docstring before you change this file. Two constraints shape it:
 
 - Wahoo revokes the previous access token only after a successful call with its replacement. It also allows 10 unrevoked tokens for each user. **So `authenticate()` makes no network call, and the refresh happens lazily at the first API call.** A refresh that nothing uses leaks a token, and ten such runs lock the user out. The rotated refresh token is persisted at once, with a temp file and `os.replace`. The old one is spent as soon as the refresh succeeds.
 - Wahoo also limits the Cloud API to approved applications. An unapproved application still authorizes users and still receives valid tokens. The failure therefore appears only at the first API call, as a 422 whose *body* names the cause. `_raise_for_error()` replaces `raise_for_status()` for that reason: the status line alone sends the operator hunting a malformed query. It maps the not-approved 422 and any 401 or 403 to `TrackerAuthError`, which is exit code 1 and needs a human. Every other status stays an `HTTPError`, which is exit code 2. All of them carry the response body.
 
 `/v1/workouts` has no date filter, so `list_activities` pages through `starts`-descending results until it passes the cutoff.
+
+Wahoo publishes its limits, in two tiers. `_RATE_LIMITS` holds both, and `WAHOO_APP_TIER` picks one. The tier belongs to the application registration: the operator asks Wahoo for a sandbox or a production application, and an approved application stays in the tier it was asked for. **The tier is therefore a fact about the registration, not a state that approval changes.** Sandbox is the default, because this container serves one person.
+
+Wahoo exempts the authentication, the token refresh, and the file downloads, so `_get()` is counted and `download()` uses `limiter.retry()` instead. Every response also carries `X-RateLimit-Remaining` and `X-RateLimit-Reset`, which `_sync_limits()` reads. **The headers are the truth and the local counters are only an estimate**, because they miss the requests of an earlier run and of any other client of the same application.
+
+**`list_activities()` keeps the pages it already read when a limit stops it.** Only the list spends budget, so a partial list still downloads every activity it found. Discarding the pages would spend the whole budget of a run and write nothing, and the next run would start at page 1 and stop in the same place.
 
 ### Setup and the main entrypoint
 
@@ -101,8 +121,9 @@ Files are written to `data/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`.
 Environment variables drive all configuration. [README.md](README.md) holds the full table.
 
 - Shared: `TRACKERS` (default `garmin`), `DAYS_BACK` (default 7), `TOKENS_DIR` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `STATE_DIR` (default `<OUTPUT_DIR>/.state`, for the dedup markers), `DOWNLOAD_TARGETS` (default `FIT`), `<TRACKER>_DOWNLOAD_TARGETS`, and the deprecated `DOWNLOAD_FORMATS`.
+- Rate limits: `load_policy()` in [src/ratelimit.py](src/ratelimit.py) holds the whole list. Note that the per-tracker form of `RATE_LIMIT_MAX_WAIT` is `<TRACKER>_MAX_WAIT`, which is the one name that does not simply take a prefix.
 - Garmin: `GARMIN_EMAIL` and `GARMIN_PASSWORD`, both optional once tokens exist.
-- Wahoo: `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`, **required on every run** because the refresh needs them, plus the optional `WAHOO_REDIRECT_URI`.
+- Wahoo: `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`, **required on every run** because the refresh needs them, plus the optional `WAHOO_REDIRECT_URI` and `WAHOO_APP_TIER` (default `sandbox`).
 
 Every credential can come from a Docker secret. Each tracker stores its tokens under `<TOKENS_DIR>/<name>`. Docker Compose mounts `./data` and `./tokens` as volumes, so both survive the run-once lifecycle.
 
@@ -114,7 +135,10 @@ The tests use no network and no real credentials. [tests/conftest.py](tests/conf
 - `mock_garmin`, a `garminconnect` client mock.
 - Sample GPX, TCX, and FIT-zip payloads, and sample Wahoo JSON.
 
-Wahoo tests mock at the `requests.Session` level. When you change download logic, update `_DL_FORMATS` and the matching sample payloads and zip builders in conftest together.
+- `fake_time`, an autouse fixture that replaces the whole `src.ratelimit.time` reference with a clock that moves only when something sleeps. **It must replace `sleep` and `monotonic` together.** A no-op `sleep` beside a real clock leaves the time unchanged after a wait, so the windows never bind, the limiter admits more requests than a published limit allows, and no test can see it. Without the fixture the Wahoo retry tests take 30 seconds each.
+- `clean_rate_limit_env`, an autouse fixture that hides the rate limit variables of the real environment. The shared names (`MAX_RETRIES`, `BACKOFF_MAX`) are generic enough to sit in a developer shell already. It lists the exact names that `load_policy` reads, because a match on the suffix alone would also delete `DATABASE_MAX_WAIT` and its like.
+
+Wahoo tests mock at the `requests.Session` level. When you change download logic, update `_DL_FORMATS` and the matching sample payloads and zip builders in conftest together. Give every mocked response a real `headers` dict: a bare `MagicMock` answers `headers.get()` with another mock, and the rate limit headers then read as something they are not.
 
 ## CI/CD
 
