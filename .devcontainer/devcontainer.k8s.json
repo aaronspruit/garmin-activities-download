@@ -1,0 +1,63 @@
+{
+  "name": "garmin-activities-download (kubernetes)",
+  // Same `dev` stage as the local dev container, for the same reason: the
+  // development environment matches the shipped image. DevPod builds this
+  // stage inside the workspace pod with dockerless, so the cluster needs no
+  // registry and no pull secret.
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "..",
+    "target": "dev"
+  },
+  "remoteUser": "appuser",
+  // A cluster has no host user, so there is no UID to map to. The pod manifest
+  // template of the provider pins the UID and the group instead.
+  "updateRemoteUserUID": false,
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": { "installZsh": true },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Claude Code ships as an npm package; without a node runtime already
+    // present its feature bootstraps Node 18 from NodeSource, so pin LTS here
+    // instead. The claude-code feature declares installsAfter node, so the
+    // ordering is handled for us.
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
+    // Installs the `claude` CLI globally and pulls in the anthropic.claude-code
+    // VS Code extension via its own feature metadata.
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  // There is no "mounts" key here. `${localEnv:HOME}` has no value without a
+  // host, so the volumes arrive from the pod manifest template of the DevPod
+  // provider. That template is global, so every workspace of the provider
+  // gets the same shared home. See k8s/devcontainer/README.md.
+  //
+  // link-shared-home.sh points the durable parts of ~/.claude at that shared
+  // volume. It exits without an error when the volume is absent, so this same
+  // command is safe on a workstation.
+  "postCreateCommand": "bash .devcontainer/link-shared-home.sh && pip install --user -r requirements.txt -r requirements-dev.txt",
+  // DevPod clones the repository into the pod under /workspaces/<workspace-id>,
+  // and the workspace ID comes from the folder name. ${containerWorkspaceFolder}
+  // resolves to the real path, which the fixed path in devcontainer.json cannot.
+  "remoteEnv": {
+    "OUTPUT_DIR": "${containerWorkspaceFolder}/data",
+    "TOKENS_DIR": "${containerWorkspaceFolder}/tokens"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff", "anthropic.claude-code"],
+      "settings": {
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        "ruff.lineLength": 120,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+          }
+        }
+      }
+    }
+  }
+}
