@@ -461,6 +461,22 @@ You do not need the `UID` and `GID` values from [File ownership on Linux](#file-
 > [!NOTE]
 > The dev container has no Docker CLI and no mounted Docker socket. You cannot run `docker build` or `docker compose` in it. Run these commands in a terminal on the host.
 
+### Dev container on Kubernetes
+
+[.devcontainer/devcontainer.k8s.json](.devcontainer/devcontainer.k8s.json) runs the same `dev` stage as a pod, with [DevPod](https://devpod.sh). Use it when you want the workspace in a cluster instead of on your workstation.
+
+The cluster needs a namespace, a shared home volume and a pod manifest template first. These are not specific to this repository, and they live in the `devcontainer/` folder of the homek8 repository. Install them once, then start a workspace:
+
+```bash
+devpod up . --provider kubernetes \
+  --devcontainer-path .devcontainer/devcontainer.k8s.json \
+  --ide vscode
+```
+
+The file differs from the local one in three points. It has no `mounts` key, because `${localEnv:HOME}` has no value without a host. It sets `updateRemoteUserUID` to `false`, because a cluster has no host user. Its `postCreateCommand` runs [.devcontainer/link-shared-home.sh](.devcontainer/link-shared-home.sh) first, which points the durable parts of `~/.claude` at the shared volume.
+
+DevPod clones the repository into the pod and does not copy your working tree. Push your work before you start a workspace. The `tokens/` folder is also absent, so run `python -m src.setup <tracker>` again inside the pod.
+
 ### Manual setup
 
 Install the runtime and development dependencies:
