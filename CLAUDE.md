@@ -4,12 +4,16 @@ Guidance for Claude Code (claude.ai/code) when it works in this repository.
 
 ## Mandatory rules
 
-These four rules are not optional. They apply to every change.
+These five rules are not optional. They apply to every change.
 
 1. **Write all documentation with `/simple-english`.** This covers the README, this file, comments and docstrings, commit messages, pull request titles and bodies, release notes, and messages the operator reads. Invoke the `simple-english` skill first, then write the text. Do not write the text first and clean it up later.
 2. **Breaking-change detail belongs only in the pull request.** Do not put migration steps, upgrade instructions, or "this breaks X" in the README or in this file. Put them in the pull request body, and give the pull request the correct `changelog:` label. The label carries the detail into the release notes. The README and this file describe how the code works now. The release notes are the only record of what changed. A design note can say why the current behavior exists, but it must not tell a user what to do about an older install.
 3. **Comments describe the present, not the past.** A comment says what the current config does and why. It does not say what the config replaced, or what an older version did. `git log` and `git blame` hold that, and a stale "X still serves Y" line is wrong the moment Y changes. When you migrate something, write the new file as if it was always that way, and strip the same kind of history out of every file the change touches. The migration story goes in the commit message and the pull request.
 4. **Write the fewest sentences that carry the fact.** State each fact in one place, and link to that place from anywhere else that needs it. Do not repeat what a linked file already says. Do not write a preamble, a list of what comes next, or a closing restatement. If a section changes nothing about what the operator does, delete the section instead of shortening it.
+5. **Keep the notes in agent-memory current.** The `agent-memory` MCP server holds every note. This repository writes to the store `homek8`, which is a note store on that server and not a git branch. One subject gets one store, so a note about another subject goes to the store of that subject, and never here. Do not write to the local memory directory. This store does not load itself into context, so every recall is a search that you run.
+   - **Start each session with a search.** Search the store `homek8` for the subject of the work. Read each note that the search returns. Use what you read as context for the work that follows. Do this before you read files, and before you plan the change.
+   - **Write notes during the session, not only at the end.** After each decision, each finding and each piece of work, write it to the store. Record what you decided, what you found, and what stays open. Do not wait for the end of the session. Do not wait for the user to ask.
+   - **One subject gets one note.** Update the note that covers the subject. Do not add a second note for the same subject.
 
 ## Commands
 
