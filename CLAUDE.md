@@ -14,6 +14,7 @@ These five rules are not optional. They apply to every change.
    - **Start each session with a search.** Search the store `garmin-activities-download` for the subject of the work. Read each note that the search returns. Use what you read as context for the work that follows. Do this before you read files, and before you plan the change.
    - **Write notes during the session, not only at the end.** After each decision, each finding and each piece of work, write it to the store. Record what you decided, what you found, and what stays open. Do not wait for the end of the session. Do not wait for the user to ask.
    - **One subject gets one note.** Update the note that covers the subject. Do not add a second note for the same subject.
+   - **Record the outcome before you finish.** Write the pull request number, the branch, and whether the change is applied to the repo. List what stays open.
 
 ## Commands
 
