@@ -38,12 +38,12 @@ class TestSetupDispatch:
 
     def test_rejects_an_unknown_tracker_and_lists_the_valid_ones(self, capsys):
         with pytest.raises(SystemExit) as exc:
-            setup(["polar"])
+            setup(["strava"])
 
         assert exc.value.code == 1
         err = capsys.readouterr().err
-        assert "Unknown tracker 'polar'" in err
-        assert "garmin, wahoo" in err
+        assert "Unknown tracker 'strava'" in err
+        assert "garmin, polar, wahoo" in err
 
 
 class TestGarminInteractiveSetup:

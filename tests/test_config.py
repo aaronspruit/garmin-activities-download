@@ -91,9 +91,9 @@ class TestParseTrackers:
         assert load_config().trackers == ["wahoo", "garmin"]
 
     def test_unknown_tracker_raises_value_error(self, monkeypatch):
-        monkeypatch.setenv("TRACKERS", "garmin,polar")
+        monkeypatch.setenv("TRACKERS", "garmin,strava")
 
-        with pytest.raises(ValueError, match="Invalid TRACKERS entry 'polar'"):
+        with pytest.raises(ValueError, match="Invalid TRACKERS entry 'strava'"):
             load_config()
 
     def test_empty_trackers_raises_value_error(self, monkeypatch):

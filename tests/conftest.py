@@ -1,5 +1,6 @@
 """Shared test fixtures."""
 
+import gzip
 import io
 import zipfile
 from unittest.mock import MagicMock
@@ -116,6 +117,40 @@ SAMPLE_WAHOO_TOKEN_RESPONSE = {
     "refresh_token": "rotated-refresh-token",
     "expires_in": 7200,
 }
+
+
+# --- Polar samples ---------------------------------------------------------
+
+POLAR_FIT_CONTENT = b"\x0e\x10POLAR_FIT_BINARY"
+POLAR_GPX_CONTENT = b"<gpx>polar</gpx>"
+POLAR_TCX_CONTENT = b"<TrainingCenterDatabase>polar</TrainingCenterDatabase>"
+POLAR_TCX_CONTENT_GZIPPED = gzip.compress(POLAR_TCX_CONTENT)
+
+SAMPLE_POLAR_EXERCISE = {
+    "id": "2AC312F",
+    "upload_time": "2026-08-12T06:10:00.000Z",
+    "polar_user": "https://www.polaraccesslink.com/v3/users/1",
+    "device": "Polar Vantage V3",
+    "start_time": "2026-08-12T06:00:00",
+    "start_time_utc_offset": 180,
+    "duration": "PT1H1M1S",
+    "sport": "RUNNING",
+    "detailed_sport_info": "RUNNING",
+}
+
+# An exercise with no sport detail, to check the plainer name fallback.
+SAMPLE_POLAR_EXERCISE_PLAIN = {
+    "id": "9F00A1",
+    "start_time": "2026-08-11T07:00:00",
+    "sport": "OTHER",
+}
+
+SAMPLE_POLAR_TOKEN_RESPONSE = {
+    "access_token": "polar-access-token",
+    "x_user_id": 2278512,
+}
+
+SAMPLE_POLAR_TOKENS = {"access_token": "saved-polar-access-token"}
 
 
 # --- Tracker fixtures -----------------------------------------------------

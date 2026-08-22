@@ -16,9 +16,10 @@ from src.trackers.base import (
     UnsafeActivityIdError,
 )
 from src.trackers.garmin import GarminTracker
+from src.trackers.polar import PolarTracker
 from src.trackers.wahoo import WahooTracker
 
-_REGISTERED: tuple[type[Tracker], ...] = (GarminTracker, WahooTracker)
+_REGISTERED: tuple[type[Tracker], ...] = (GarminTracker, WahooTracker, PolarTracker)
 
 TRACKER_CLASSES: dict[str, type[Tracker]] = {tracker.name: tracker for tracker in _REGISTERED}
 
@@ -28,6 +29,7 @@ __all__ = [
     "Activity",
     "ActivityDownloadError",
     "GarminTracker",
+    "PolarTracker",
     "Tracker",
     "TrackerAuthError",
     "UnsafeActivityIdError",

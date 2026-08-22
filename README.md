@@ -1,7 +1,7 @@
 
 # Garmin Activities Download
 
-This container downloads GPS activities as FIT, GPX, or TCX files. It supports Garmin Connect and Wahoo. It runs one time, then it exits. You can deploy it with Docker Compose or with a Kubernetes CronJob.
+This container downloads GPS activities as FIT, GPX, or TCX files. It supports Garmin Connect, Wahoo, and Polar. It runs one time, then it exits. You can deploy it with Docker Compose or with a Kubernetes CronJob.
 
 ## Overview
 
@@ -74,7 +74,7 @@ The tokens of each tracker must exist in the PVC before the first scheduled run.
     --overrides='{"spec":{"containers":[{"name":"garmin-setup","image":"ghcr.io/OWNER/garmin-activities-download:latest","command":["python","-m","src.setup","garmin"],"stdin":true,"tty":true,"volumeMounts":[{"name":"tokens","mountPath":"/app/tokens"}]}],"volumes":[{"name":"tokens","persistentVolumeClaim":{"claimName":"garmin-tokens-pvc"}}]}}'
   ```
 
-  For Wahoo, replace `garmin` with `wahoo` in the `command` list. The Wahoo setup also needs `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET` in the pod environment.
+  For Wahoo, replace `garmin` with `wahoo` in the `command` list. The Wahoo setup also needs `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET` in the pod environment. For Polar, replace `garmin` with `polar`, and give the pod `POLAR_CLIENT_ID` and `POLAR_CLIENT_SECRET` instead.
 
 * Run the setup locally against the `./tokens` directory. Then copy the token files into the PVC with `kubectl cp`, from a temporary pod that mounts the PVC.
 
@@ -103,7 +103,7 @@ The pod runs as UID/GID 1000 through `securityContext`. The `fsGroup` value make
 
 | Variable | Default | Description |
 |----------|---------|--------------|
-| `TRACKERS` | `garmin` | Comma-separated list of trackers to download from. Each entry is `garmin` or `wahoo` |
+| `TRACKERS` | `garmin` | Comma-separated list of trackers to download from. Each entry is `garmin`, `wahoo`, or `polar` |
 | `DAYS_BACK` | `7` | Number of past days of activities that each run downloads |
 | `TOKENS_DIR` | `/app/tokens` | Path where the container reads and writes the authentication tokens. Each tracker uses its own folder below this path |
 | `OUTPUT_DIR` | `/app/data` | Path where the container saves the activity files |
@@ -118,11 +118,11 @@ Seven more variables control the rate limits. Read [Rate limits](#rate-limits).
 |----------------------------|--------------------------|---------|--------------|
 | `MAX_DOWNLOADS_PER_RUN` | `<TRACKER>_MAX_DOWNLOADS_PER_RUN` | `0` | Number of files that one run writes before it stops. `0` removes the cap. It counts files, not activities, so an activity with 3 formats counts 3 times. The run compares the count between activities, so the last activity writes all of its formats and the run can finish above this number |
 | `RATE_LIMIT_MAX_WAIT` | `<TRACKER>_MAX_WAIT` | `300` | Longest single wait in seconds that a run accepts. A longer wait stops the run |
-| `MAX_RETRIES` | `<TRACKER>_MAX_RETRIES` | 2 for `garmin`, 3 for `wahoo` | Number of retries after a failure that can clear, which is a rate limit refusal or a server failure. The container does not retry a refused credential or a missing file |
-| `BACKOFF_INITIAL` | `<TRACKER>_BACKOFF_INITIAL` | 30 for `garmin`, 5 for `wahoo` | Delay in seconds before the first retry. It doubles for each retry that follows |
+| `MAX_RETRIES` | `<TRACKER>_MAX_RETRIES` | 2 for `garmin`, 3 for `wahoo` and `polar` | Number of retries after a failure that can clear, which is a rate limit refusal or a server failure. The container does not retry a refused credential or a missing file |
+| `BACKOFF_INITIAL` | `<TRACKER>_BACKOFF_INITIAL` | 30 for `garmin`, 5 for `wahoo` and `polar` | Delay in seconds before the first retry. It doubles for each retry that follows |
 | `BACKOFF_MAX` | `<TRACKER>_BACKOFF_MAX` | `300` | Largest delay in seconds that the backoff produces |
 | — | `<TRACKER>_RATE_LIMIT` | see [Rate limits](#rate-limits) | Limits of that API, as `REQUESTS/SECONDS` entries, for example `20/60, 300/3600`. The value `none` removes these windows. It does not remove `<TRACKER>_MIN_INTERVAL`, which still paces the requests |
-| — | `<TRACKER>_MIN_INTERVAL` | 2 for `garmin`, 0.5 for `wahoo` | Smallest gap in seconds between two requests to that tracker |
+| — | `<TRACKER>_MIN_INTERVAL` | 2 for `garmin`, 1 for `polar`, 0.5 for `wahoo` | Smallest gap in seconds between two requests to that tracker |
 
 The last two describe the API of one tracker, so they have no form for every tracker.
 
@@ -211,6 +211,7 @@ TRACKERS=garmin,wahoo
 |---------|---------|-------------|-------------|
 | `garmin` | `FIT`, `GPX`, `TCX` | `GARMIN_EMAIL`, `GARMIN_PASSWORD` (both optional if the tokens are valid) | `python -m src.setup garmin` |
 | `wahoo` | `FIT` | `WAHOO_CLIENT_ID`, `WAHOO_CLIENT_SECRET` (both necessary for every run) | `python -m src.setup wahoo` |
+| `polar` | `FIT`, `GPX`, `TCX` | `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET` (only for setup, not for a headless run) | `python -m src.setup polar` |
 
 Each tracker downloads only the formats that it supplies. If one tracker fails, the container continues with the other trackers, and reports the most serious exit code.
 
@@ -261,6 +262,39 @@ Wahoo gives one activity file for each workout, and it is always a FIT file. The
 
 > [!NOTE]
 > From 1 January 2026, Wahoo permits 10 unrevoked access tokens for each user. Each setup run uses one of these. The container refreshes a token only immediately before it reads the API, so a normal run does not waste tokens. If you get a token limit error, send `DELETE https://api.wahooligan.com/v1/permissions` to remove the application access, then run the setup again.
+
+#### Polar
+
+Polar uses OAuth2, the same as Wahoo. The container cannot open a browser, so the first authentication needs some manual steps.
+
+**Before you start**, do these steps one time:
+
+1. Create an API client at [admin.polaraccesslink.com](https://admin.polaraccesslink.com). Make a note of the client ID and the client secret.
+2. Register a redirect URI for the client. It must agree exactly with `POLAR_REDIRECT_URI`. The default value is `http://localhost`.
+3. Put the client ID and the client secret in `.env` as `POLAR_CLIENT_ID` and `POLAR_CLIENT_SECRET`.
+
+Then run the setup:
+
+```bash
+docker compose run --rm -it garmin-sync python -m src.setup polar
+```
+
+The setup prints an authorization URL. Do these steps:
+
+1. Open the URL in a browser and approve the access.
+2. The browser goes to `http://localhost` and fails to load the page. This is correct. No program listens at that address.
+3. Copy the value of `code` from the address bar of the browser.
+4. Paste the value at the prompt.
+
+The setup then registers this container with Polar for that user, which Polar requires before any activity is readable, and saves the access token to `<TOKENS_DIR>/polar/tokens.json`.
+
+> [!NOTE]
+> `POLAR_CLIENT_ID` and `POLAR_CLIENT_SECRET` are only needed for this setup step. Unlike Wahoo, a headless run does not refresh the access token, so it needs neither variable.
+
+Polar gives FIT, GPX, and TCX for each exercise, the same three formats as Garmin. Only exercises uploaded to Polar Flow in the last 30 days are ever visible through this API, no matter how large `DAYS_BACK` is set.
+
+> [!NOTE]
+> A 403 response that names a missing consent means the user has not accepted every mandatory consent in the Polar Flow app. Accept them there, then run the setup again.
 
 ## Output files
 
@@ -329,6 +363,7 @@ An early stop is a success, and the exit code stays `0`. Every file that the run
 | `garmin` | 20 requests per minute, 300 per hour, 2000 per day, 2 seconds between requests | A conservative default. Garmin publishes no limit for this API | The login, the activity list, and every file download |
 | `wahoo`, `sandbox` | 25 requests per 5 minutes, 100 per hour, 250 per day | Published by Wahoo | The workout list only |
 | `wahoo`, `production` | 200 requests per 5 minutes, 1000 per hour, 5000 per day | Published by Wahoo | The workout list only |
+| `polar` | 30 requests per 5 minutes, 150 per hour, 1000 per day, 1 second between requests | A conservative default. Polar's AccessLink v3 API, which this container uses, publishes no limit of its own | The exercise list and every file download |
 
 The Wahoo tier belongs to the application registration. You ask Wahoo for a sandbox application or for a production application, and Wahoo approves that request. An application stays in the tier that you asked for. Set `WAHOO_APP_TIER` to that tier once, and leave it. Sandbox is the default, and the sandbox limits are enough for one person.
 
@@ -337,6 +372,8 @@ Wahoo exempts the authentication, the token refresh, and the file downloads from
 One Wahoo list page holds 30 workouts, and the container reads at most 100 pages. A window of 3000 workouts therefore costs 100 requests to list, which is the whole hourly budget of a sandbox application. If a limit stops the list at page 50, the container keeps the 1470 workouts of the 49 pages that it read, and it downloads them, because the files cost nothing. The run is never wasted. A window that needs more pages than the budget allows is still a problem, because each run starts the list again at page 1. To fill a long history, raise `DAYS_BACK` in steps instead of in one jump.
 
 Garmin publishes nothing, so its numbers are a judgement, not a fact. They are low on purpose. A Garmin refusal applies to the account, not to the address, and it has locked users out for 24 to 48 hours. Watch your own account for some weeks, then raise the numbers with `GARMIN_RATE_LIMIT` if you need a faster backfill.
+
+Polar's own file exports come from the same API as the exercise list, unlike Wahoo's CDN-hosted files, so a Polar run spends its budget on every download too, not on the list alone. Polar does publish numeric limits, but only for a newer, separate API that this container does not use for activity files. Watch your own account for some weeks, then raise the numbers with `POLAR_RATE_LIMIT` if you need a faster backfill.
 
 ### To change the limits
 
@@ -398,6 +435,16 @@ A Wahoo access token is valid for 2 hours, and the refresh token has no expiry t
 * Wahoo did not approve the application for the Cloud API. The log line then contains `This application has not been approved by Wahoo Fitness`. Read [Wahoo application approval](#wahoo-application-approval).
 
 Run `python -m src.setup wahoo` again to get a new token set. If the token limit is the cause, first send `DELETE https://api.wahooligan.com/v1/permissions`. But if the application is not approved, do not run the setup again. Only Wahoo can correct that, and each run uses one more access token.
+
+### Polar authentication fails on a scheduled run (exit code 1)
+
+A Polar access token has no expiry, and the container never refreshes it, so a working setup keeps working with no manual step. Exit code `1` for Polar usually shows one of these:
+
+* The token file did not persist between runs, or a different run wrote over it.
+* The user revoked the application's access in the Polar Flow app.
+* The user has not accepted every mandatory consent that the client asks for. The log line then names a missing consent.
+
+Run `python -m src.setup polar` again to get a new access token.
 
 ### You need an activity file again
 
