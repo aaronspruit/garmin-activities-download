@@ -87,22 +87,19 @@ def _validate_folder(folder: str, entry: str) -> str:
 def _render_folder(template: str, entry: str, tracker: str, fmt: str) -> str:
     """Substitute `{format}` and `{tracker}` in a destination template.
 
-    `format_map` reports an unknown placeholder as a `KeyError` and an
-    unbalanced brace as a `ValueError`. Both become a configuration error that
-    names the entry, instead of a traceback or a literal `{ingesting_app}`
-    directory.
+    Done with `str.replace` rather than `str.format_map`, because this grammar
+    has no escape: `{{` must stay an error instead of becoming one literal
+    brace and a `{ingesting_app}` directory. Every brace that survives the
+    substitution is therefore a placeholder that does not exist, or one that
+    has no partner.
     """
-    try:
-        return template.format_map({"format": fmt, "tracker": tracker})
-    except (KeyError, IndexError) as e:
+    rendered = template.replace("{format}", fmt).replace("{tracker}", tracker)
+    if "{" in rendered or "}" in rendered:
         raise ValueError(
-            f"Invalid {_TARGETS_VAR} entry {entry!r}: unknown placeholder {{{e.args[0]}}}. "
+            f"Invalid {_TARGETS_VAR} entry {entry!r}: unknown or unbalanced placeholder in {rendered!r}. "
             f"Valid placeholders: {', '.join('{%s}' % p for p in _PLACEHOLDERS)}"
-        ) from None
-    except ValueError:
-        raise ValueError(
-            f"Invalid {_TARGETS_VAR} entry {entry!r}: unbalanced {{ or }} in the destination folder"
-        ) from None
+        )
+    return rendered
 
 
 def _parse_formats(raw: str, entry: str) -> list[str]:

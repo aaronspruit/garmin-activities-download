@@ -246,7 +246,21 @@ class TestDestinationPlaceholders:
     def test_unknown_placeholder_raises_value_error(self, monkeypatch):
         monkeypatch.setenv("DOWNLOAD_TARGETS", "{ingesting_app}=FIT")
 
-        with pytest.raises(ValueError, match="unknown placeholder"):
+        # The message names what was left over, so the typo is easy to find.
+        with pytest.raises(ValueError, match=r"unknown or unbalanced placeholder in '\{ingesting_app\}'"):
+            load_config()
+
+    def test_a_doubled_brace_raises_value_error(self, monkeypatch):
+        """The grammar has no escape, so `{{` is a mistake and not one brace."""
+        monkeypatch.setenv("DOWNLOAD_TARGETS", "app2/{{ingesting_app}}=FIT")
+
+        with pytest.raises(ValueError, match="unknown or unbalanced"):
+            load_config()
+
+    def test_a_positional_field_raises_value_error(self, monkeypatch):
+        monkeypatch.setenv("DOWNLOAD_TARGETS", "app2/{0}=FIT")
+
+        with pytest.raises(ValueError, match="unknown or unbalanced"):
             load_config()
 
     def test_unbalanced_brace_raises_value_error(self, monkeypatch):
