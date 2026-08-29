@@ -454,7 +454,9 @@ The first build takes some minutes. The environment is ready when `postCreateCom
 
 The dev container is built from the `dev` stage of the project [Dockerfile](Dockerfile). Development therefore uses the same base image and the same non-root `appuser` as the released image.
 
-The workspace mounts at `/workspaces/garmin-activities-download`, not at `/app` as in the image. `OUTPUT_DIR` and `TOKENS_DIR` therefore point to the `./data` and `./tokens` folders in the repository. An interactive `python -m src.setup <tracker>` or `python -m src.main` in the container reads and writes these directories.
+The workspace mounts at its host path, not at `/app` as in the image. `OUTPUT_DIR` and `TOKENS_DIR` therefore point to the `./data` and `./tokens` folders in the repository. An interactive `python -m src.setup <tracker>` or `python -m src.main` in the container reads and writes these directories.
+
+The container also mounts your host home directory, at the same absolute path that it has on the host. Claude Code then finds the same skills, plugins, MCP servers and session history as on the host. The identical path is what makes this work. Claude Code keys each session transcript on the working directory, and the state it writes into `~/.claude` holds absolute paths. This mount needs a POSIX home directory on the host: WSL, Linux or macOS.
 
 You do not need the `UID` and `GID` values from [File ownership on Linux](#file-ownership-on-linux). On Linux, `updateRemoteUserUID` maps `appuser` to your host user when the container is created.
 
