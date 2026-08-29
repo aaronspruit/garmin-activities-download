@@ -22,7 +22,9 @@ from tests.conftest import (
 
 class TestDownloadNewActivities:
     def test_downloads_new_activity(self, mock_tracker, tmp_path):
-        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(
+            mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7
+        )
 
         assert count == 1
         gpx_file = tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx"
@@ -34,7 +36,9 @@ class TestDownloadNewActivities:
         existing = tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx"
         existing.write_bytes(b"existing data")
 
-        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(
+            mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7
+        )
 
         assert count == 0
         mock_tracker.download.assert_not_called()
@@ -43,7 +47,7 @@ class TestDownloadNewActivities:
     def test_downloads_multiple_activities(self, tmp_path):
         tracker = FakeTracker(activities=[ACTIVITY, ACTIVITY_2])
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 2
         assert (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").exists()
@@ -55,14 +59,14 @@ class TestDownloadNewActivities:
         existing = tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx"
         existing.write_bytes(b"existing")
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 1
         assert tracker.download.call_count == 1
 
     def test_creates_output_directory(self, mock_tracker, tmp_path):
         output = tmp_path / "nested" / "dir"
-        download_new_activities(mock_tracker, str(output), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(output), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert output.exists()
 
@@ -80,12 +84,12 @@ class TestDownloadNewActivities:
             download_new_activities(mock_tracker, str(tmp_path), days_back=7)
 
     def test_passes_requested_format_to_tracker(self, mock_tracker, tmp_path):
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         mock_tracker.download.assert_called_once_with(ACTIVITY, "GPX")
 
     def test_passes_date_range_to_tracker(self, mock_tracker, tmp_path):
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         start_date, end_date = mock_tracker.list_activities.call_args.args
         assert start_date < end_date
@@ -94,7 +98,9 @@ class TestDownloadNewActivities:
     def test_skips_activity_when_download_fails(self, mock_tracker, tmp_path):
         mock_tracker.download.side_effect = ActivityDownloadError("no .fit member")
 
-        count = download_new_activities(mock_tracker, str(tmp_path), targets=["FIT"], days_back=7)
+        count = download_new_activities(
+            mock_tracker, str(tmp_path), targets=[DownloadTarget("FIT", "FIT")], days_back=7
+        )
 
         assert count == 0
         assert not (tmp_path / "FIT" / f"fake-{ACTIVITY.id}.fit").exists()
@@ -106,7 +112,7 @@ class TestDownloadNewActivities:
         count = download_new_activities(
             mock_tracker,
             str(tmp_path),
-            targets=["FIT", "GPX", "TCX"],
+            targets=[DownloadTarget("FIT", "FIT"), DownloadTarget("GPX", "GPX"), DownloadTarget("TCX", "TCX")],
             days_back=7,
         )
 
@@ -125,7 +131,7 @@ class TestDownloadNewActivities:
         count = download_new_activities(
             mock_tracker,
             str(tmp_path),
-            targets=["GPX", "TCX"],
+            targets=[DownloadTarget("GPX", "GPX"), DownloadTarget("TCX", "TCX")],
             days_back=7,
         )
 
@@ -139,7 +145,7 @@ class TestTrackerFilenamePrefix:
     """Two trackers can hand out the same id, so the filename must carry the tracker."""
 
     def test_filename_is_prefixed_with_tracker_name(self, mock_tracker, tmp_path):
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert [p.name for p in (tmp_path / "GPX").iterdir()] == [f"fake-{ACTIVITY.id}.gpx"]
 
@@ -150,8 +156,8 @@ class TestTrackerFilenamePrefix:
         first = FakeTracker(data=b"from-fake")
         second = OtherTracker(data=b"from-other")
 
-        download_new_activities(first, str(tmp_path), targets=["GPX"], days_back=7)
-        count = download_new_activities(second, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(first, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
+        count = download_new_activities(second, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         # The second tracker sees no file of its own, so it downloads rather
         # than wrongly deduplicating against the first tracker's file.
@@ -170,7 +176,9 @@ class TestUnsupportedFormats:
 
         tracker = FitOnlyTracker(data=SAMPLE_FIT_CONTENT)
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["FIT", "GPX"], days_back=7)
+        count = download_new_activities(
+            tracker, str(tmp_path), targets=[DownloadTarget("FIT", "FIT"), DownloadTarget("GPX", "GPX")], days_back=7
+        )
 
         assert count == 1
         assert (tmp_path / "FIT" / f"fitonly-{ACTIVITY.id}.fit").exists()
@@ -186,7 +194,7 @@ class TestUnsupportedFormats:
 
         tracker = FitOnlyTracker()
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 0
         # Nothing is fetched at all. Wahoo relies on this: refreshing a token it
@@ -219,7 +227,7 @@ class TestActivityIdValidation:
         output = tmp_path / "data"
 
         with pytest.raises(UnsafeActivityIdError, match="non-alphanumeric activity id"):
-            download_new_activities(tracker, str(output), targets=["GPX"], days_back=7)
+            download_new_activities(tracker, str(output), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         tracker.download.assert_not_called()
         # Nothing was written anywhere -- inside the output dir or outside it.
@@ -229,7 +237,7 @@ class TestActivityIdValidation:
         tracker = FakeTracker(activities=[dataclasses.replace(ACTIVITY, id="../../escaped"), ACTIVITY_2])
 
         with pytest.raises(UnsafeActivityIdError):
-            download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+            download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         tracker.download.assert_not_called()
         assert not (tmp_path / "GPX" / f"fake-{ACTIVITY_2.id}.gpx").exists()
@@ -238,7 +246,7 @@ class TestActivityIdValidation:
     def test_accepts_alphanumeric_id(self, tmp_path, activity_id):
         tracker = FakeTracker(activities=[dataclasses.replace(ACTIVITY, id=activity_id)])
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 1
         assert (tmp_path / "GPX" / f"fake-{activity_id}.gpx").read_bytes() == SAMPLE_GPX
@@ -364,7 +372,7 @@ class TestStateMarkerDedup:
     """Dedup keys off a marker, not the file, so a consumer may delete what it imported."""
 
     def test_writes_a_marker_beside_each_downloaded_file(self, mock_tracker, tmp_path):
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         marker = tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx"
         assert marker.exists()
@@ -372,11 +380,13 @@ class TestStateMarkerDedup:
 
     def test_does_not_download_again_after_the_consumer_deleted_the_file(self, mock_tracker, tmp_path):
         """The reason this feature exists: a deleted file must not be re-fetched every run."""
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
         (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").unlink()
         mock_tracker.download.reset_mock()
 
-        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(
+            mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7
+        )
 
         assert count == 0
         mock_tracker.download.assert_not_called()
@@ -384,11 +394,13 @@ class TestStateMarkerDedup:
 
     def test_deleting_the_marker_downloads_the_file_again(self, mock_tracker, tmp_path):
         """The documented way to recover a file deleted by accident."""
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
         (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").unlink()
         (tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx").unlink()
 
-        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(
+            mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7
+        )
 
         assert count == 1
         assert (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").read_bytes() == SAMPLE_GPX
@@ -398,7 +410,9 @@ class TestStateMarkerDedup:
         (tmp_path / "GPX").mkdir()
         (tmp_path / "GPX" / f"fake-{ACTIVITY.id}.gpx").write_bytes(b"downloaded before the upgrade")
 
-        count = download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(
+            mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7
+        )
 
         assert count == 0
         mock_tracker.download.assert_not_called()
@@ -428,7 +442,7 @@ class TestStateMarkerDedup:
     def test_no_marker_is_written_when_the_download_fails(self, mock_tracker, tmp_path):
         mock_tracker.download.side_effect = ActivityDownloadError("no .fit member")
 
-        download_new_activities(mock_tracker, str(tmp_path), targets=["FIT"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("FIT", "FIT")], days_back=7)
 
         assert list((tmp_path / ".state" / "FIT").iterdir()) == []
 
@@ -440,7 +454,7 @@ class TestStateMarkerDedup:
         download_new_activities(
             mock_tracker,
             str(output),
-            targets=["GPX"],
+            targets=[DownloadTarget("GPX", "GPX")],
             days_back=7,
             state_dir=str(state),
         )
@@ -450,7 +464,7 @@ class TestStateMarkerDedup:
 
     def test_state_dir_holds_no_activity_data(self, mock_tracker, tmp_path):
         """Markers are empty: the activity files themselves stay in the output folder."""
-        download_new_activities(mock_tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(mock_tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         markers = list((tmp_path / ".state").rglob("*.gpx"))
         assert [m.stat().st_size for m in markers] == [0]
@@ -465,7 +479,7 @@ class TestRunBudget:
             rate_limit=RateLimitPolicy(windows=(), min_interval=0.0, max_downloads=1),
         )
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 1
         assert tracker.download.call_count == 1
@@ -475,10 +489,10 @@ class TestRunBudget:
         activities = [ACTIVITY, ACTIVITY_2]
 
         first = FakeTracker(activities=activities, rate_limit=policy)
-        download_new_activities(first, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(first, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         second = FakeTracker(activities=activities, rate_limit=policy)
-        count = download_new_activities(second, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(second, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         # The marker of the first activity makes the second run start at the
         # second one, so the two runs together download both.
@@ -492,7 +506,7 @@ class TestRunBudget:
         tracker = FakeTracker(activities=[ACTIVITY, ACTIVITY_2])
         tracker.download.side_effect = [SAMPLE_GPX, BudgetExhaustedError("no budget left")]
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 1
         marker = tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY.id}.gpx"
@@ -502,7 +516,7 @@ class TestRunBudget:
         tracker = FakeTracker(activities=[ACTIVITY, ACTIVITY_2])
         tracker.download.side_effect = [SAMPLE_GPX, BudgetExhaustedError("no budget left")]
 
-        download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         # No marker, so the next run downloads this activity instead of adopting it.
         assert not (tmp_path / ".state" / "GPX" / f"fake-{ACTIVITY_2.id}.gpx").exists()
@@ -512,7 +526,7 @@ class TestRunBudget:
         tracker = FakeTracker()
         tracker.list_activities.side_effect = BudgetExhaustedError("no budget left")
 
-        count = download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        count = download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert count == 0
         assert tracker.download.call_count == 0
@@ -523,6 +537,6 @@ class TestRunBudget:
         monkeypatch.setattr("time.sleep", sleep)
         tracker = FakeTracker(activities=[ACTIVITY, ACTIVITY_2])
 
-        download_new_activities(tracker, str(tmp_path), targets=["GPX"], days_back=7)
+        download_new_activities(tracker, str(tmp_path), targets=[DownloadTarget("GPX", "GPX")], days_back=7)
 
         assert sleep.call_count == 0

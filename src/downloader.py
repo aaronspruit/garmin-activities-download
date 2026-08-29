@@ -3,22 +3,13 @@
 import logging
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from src.config import DownloadTarget, default_state_dir
 from src.ratelimit import BudgetExhaustedError
 from src.trackers import FORMAT_EXTENSIONS, ActivityDownloadError, Tracker, UnsafeActivityIdError
 
 logger = logging.getLogger(__name__)
-
-
-def _write_marker(path: str) -> None:
-    """Record that a file was downloaded, as an empty file.
-
-    Only its existence is read, so the contents stay free for later use (an
-    attempt count or a last error, for a retry policy).
-    """
-    with open(path, "wb"):
-        pass
 
 
 def _is_safe_activity_id(activity_id: object) -> bool:
@@ -33,13 +24,6 @@ def _is_safe_activity_id(activity_id: object) -> bool:
     """
     text = str(activity_id)
     return text.isascii() and text.isalnum()
-
-
-def _normalize_targets(targets: list[DownloadTarget | str] | None) -> list[DownloadTarget]:
-    """Accept targets as `DownloadTarget`s or bare format tokens (no subfolder)."""
-    if not targets:
-        return [DownloadTarget(format="FIT")]
-    return [DownloadTarget(format=t) if isinstance(t, str) else t for t in targets]
 
 
 def _supported_targets(tracker: Tracker, targets: list[DownloadTarget]) -> list[DownloadTarget]:
@@ -60,14 +44,14 @@ def _supported_targets(tracker: Tracker, targets: list[DownloadTarget]) -> list[
 def download_new_activities(
     tracker: Tracker,
     output_dir: str,
-    targets: list[DownloadTarget | str] | None = None,
+    targets: list[DownloadTarget] | None = None,
     days_back: int = 7,
     state_dir: str | None = None,
 ) -> int:
     """Download activity files to one or more destinations, skipping those already saved.
 
     A target is a format plus the folder that receives it, written to
-    `<output_dir>/<target.path>`. One folder may receive several formats, since a
+    `<output_dir>/<target.folder>`. One folder may receive several formats, since a
     destination usually belongs to a consuming application rather than to a
     format. A format wanted by several destinations is fetched from the tracker
     once per activity and written to each folder that is still missing it. Files
@@ -92,9 +76,8 @@ def download_new_activities(
     Args:
         tracker: Authenticated tracker.
         output_dir: Directory under which the target folders are created.
-        targets: `DownloadTarget`s, or bare format tokens ("FIT", "GPX", "TCX") that
-            save into a folder of the same name. Defaults to FIT into "FIT".
-            Formats the tracker does not provide are skipped with a warning.
+        targets: Destinations to fill. Defaults to FIT into "FIT". Formats the
+            tracker does not provide are skipped with a warning.
         days_back: Number of days to look back for activities.
         state_dir: Directory holding the dedup markers. Defaults to
             `<output_dir>/.state`. Delete a marker to download that file again.
@@ -107,7 +90,7 @@ def download_new_activities(
         UnsafeActivityIdError: If the tracker returns an activity id that is not
             alphanumeric, which could otherwise escape `output_dir`.
     """
-    targets = _supported_targets(tracker, _normalize_targets(targets))
+    targets = _supported_targets(tracker, targets or [DownloadTarget("FIT", "FIT")])
     if not targets:
         logger.warning("Tracker %s provides none of the requested formats; nothing to do", tracker.name)
         return 0
@@ -115,12 +98,12 @@ def download_new_activities(
     state_dir = state_dir or default_state_dir(output_dir)
 
     for target in targets:
-        os.makedirs(os.path.join(output_dir, target.path), exist_ok=True)
-        os.makedirs(os.path.join(state_dir, target.path), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, target.folder), exist_ok=True)
+        os.makedirs(os.path.join(state_dir, target.folder), exist_ok=True)
 
     paths_by_format: dict[str, list[str]] = {}
     for target in targets:
-        paths_by_format.setdefault(target.format, []).append(target.path)
+        paths_by_format.setdefault(target.format, []).append(target.folder)
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -165,7 +148,7 @@ def download_new_activities(
 
                 filepath = os.path.join(output_dir, folder, filename)
                 if os.path.exists(filepath):
-                    _write_marker(marker)
+                    Path(marker).touch()
                     continue
 
                 missing.append((filepath, marker))
@@ -200,7 +183,7 @@ def download_new_activities(
             for filepath, marker in missing:
                 with open(filepath, "wb") as f:
                     f.write(data)
-                _write_marker(marker)
+                Path(marker).touch()
                 downloaded += 1
 
         if pending:

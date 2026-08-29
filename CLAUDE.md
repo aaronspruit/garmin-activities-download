@@ -54,14 +54,13 @@ Garmin holds no special position in the code. It is one implementation of the `T
 **[src/config.py](src/config.py)** — `load_config()` builds the `Config` dataclass from environment variables.
 
 - `TRACKERS` goes through `_parse_trackers()`. Names are validated against the registry, lowercased, and deduplicated, and keep first-occurrence order.
-- `DOWNLOAD_TARGETS` goes through `_parse_targets()` and produces `DownloadTarget(format, folder)`. **`folder` is the whole destination path under `output_dir`.** A destination belongs to a consuming application, so one folder can hold several formats and can be several levels deep.
+- `DOWNLOAD_TARGETS` goes through `_parse_targets()` and produces `DownloadTarget(format, folder)`. **`folder` is the whole destination path under `output_dir`, and it is required.** A destination belongs to a consuming application, so one folder can hold several formats and can be several levels deep.
 - The grammar is `folder=FMT[+FMT]` for each entry. A bare `FMT` is short for `{format}=FMT`.
-- `{format}` and `{tracker}` resolve at load time, because both are known there. The tracker comes from the variable name. The downloader therefore sees concrete paths only.
+- `{format}` and `{tracker}` resolve at load time with `str.format_map()`, because both are known there. The tracker comes from the variable name. The downloader therefore sees concrete paths only. A `KeyError` from that call names an unknown placeholder, and a `ValueError` names an unbalanced brace.
 - `Config.download_targets` is a `dict[tracker_name, list[DownloadTarget]]`. `<TRACKER>_DOWNLOAD_TARGETS` **replaces** `DOWNLOAD_TARGETS` for that tracker. It never merges with it.
 - A format the tracker cannot supply raises a startup `ValueError` when the tracker's own variable names it. The same format only produces a runtime warning from the downloader when the tracker inherits it from the shared default. The first case is asserted, the second is inferred.
 - An unknown `<PREFIX>_DOWNLOAD_TARGETS` raises, because a typo otherwise does nothing at all. A known but disabled tracker only warns.
 - `_validate_folder()` and `_assert_within()` keep every destination inside `output_dir`.
-- `DOWNLOAD_FORMATS` is deprecated and has its own parser, `_parse_legacy_formats()`. Its `FMT:subfolder` nests under the format, which is the opposite model. Setting both variables raises.
 - **`Config` holds no credentials.** Each tracker reads its own in `from_env()`, so a new tracker never changes this dataclass.
 
 **[src/trackers/base.py](src/trackers/base.py)** — the `Tracker` ABC (`from_env`, `authenticate`, `list_activities`, `download`, `interactive_setup`), the normalized `Activity(id, name, payload)`, `FORMAT_EXTENSIONS`, and the exceptions `TrackerAuthError`, `ActivityDownloadError`, and `UnsafeActivityIdError`. `download()` returns the **final** file bytes, so each tracker unwraps its own archives and the download loop stays generic. `Activity.payload` carries opaque per-tracker data from listing to download, such as the file URL from Wahoo. It also holds the `rate_limit` class attribute and the lazy `limiter` property.
@@ -72,7 +71,7 @@ Garmin holds no special position in the code. It is one implementation of the `T
 - `RateLimiter.call()` counts a request against the windows. `RateLimiter.retry()` retries without counting, for a request the platform exempts. **Only the tracker knows which of its requests count**, so the choice belongs there and nowhere else.
 - Windows are sliding counters, so a burst at the start of a run cannot exceed a published limit.
 - **`BudgetExhaustedError` is not a failure.** A wait longer than `max_wait` raises it, the run stops early, and the exit code stays `0`. The markers make it safe: the next run continues at the same activity. Waiting out a daily limit would hold the container open for hours and overlap the next schedule.
-- `load_policy` reads the environment directly, for the same reason as `env.py`: a loader inside `config.py` would make a `config` → `trackers` → `config` cycle. `load_config` still calls it once for each tracker, so a typo stops the run at startup rather than at the first request.
+- `load_policy` reads the environment directly, for the same reason as `env.py`: a loader inside `config.py` would make a `config` → `trackers` → `config` cycle. `main.py` reads `tracker.limiter` before it authenticates, so a bad value stops that tracker before its first request. The other trackers still run.
 - `RateLimiter` resolves `time.sleep` and `time.monotonic` at each call, not at construction, so a test can replace them after a limiter exists. `tests/conftest.py` makes every wait instant with an autouse fixture.
 - [README.md](README.md) holds the variable names, the defaults, and the limits of each tracker. Do not repeat them here.
 
@@ -81,7 +80,7 @@ Garmin holds no special position in the code. It is one implementation of the `T
 **[src/downloader.py](src/downloader.py)** — `download_new_activities(tracker, ...)` first drops targets the tracker cannot supply. It warns about them and returns 0 when none survive. Then it fetches and writes.
 
 - `_is_safe_activity_id()` checks each `activity.id` for ASCII letters and digits before it reaches a path. A failure raises `UnsafeActivityIdError`, which becomes exit code 3.
-- **Dedup reads a marker, not the activity file.** The marker is an empty file at `<state_dir>/<target.path>/<tracker>-<activityId>.<ext>`, under `<output_dir>/.state/` by default. There is still no database and no manifest.
+- **Dedup reads a marker, not the activity file.** The marker is an empty file at `<state_dir>/<target.folder>/<tracker>-<activityId>.<ext>`, under `<output_dir>/.state/` by default. There is still no database and no manifest.
 - The marker exists because consuming applications delete each activity file after import. The absence of the file therefore cannot mean "not yet downloaded". Keying off the file re-fetched the whole `DAYS_BACK` window on every run.
 - An activity file present without its marker is *adopted*. The run writes the marker and downloads nothing.
 - **The marker is written after the file**, so a crash between the two is recoverable.
@@ -125,7 +124,7 @@ Files are written to `data/<FORMAT>[/<subfolder>]/<tracker>-<activityId>.<ext>`.
 
 Environment variables drive all configuration. [README.md](README.md) holds the full table.
 
-- Shared: `TRACKERS` (default `garmin`), `DAYS_BACK` (default 7), `TOKENS_DIR` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `STATE_DIR` (default `<OUTPUT_DIR>/.state`, for the dedup markers), `DOWNLOAD_TARGETS` (default `FIT`), `<TRACKER>_DOWNLOAD_TARGETS`, and the deprecated `DOWNLOAD_FORMATS`.
+- Shared: `TRACKERS` (default `garmin`), `DAYS_BACK` (default 7), `TOKENS_DIR` (default `/app/tokens`), `OUTPUT_DIR` (default `/app/data`), `STATE_DIR` (default `<OUTPUT_DIR>/.state`, for the dedup markers), `DOWNLOAD_TARGETS` (default `FIT`), and `<TRACKER>_DOWNLOAD_TARGETS`.
 - Rate limits: `load_policy()` in [src/ratelimit.py](src/ratelimit.py) holds the whole list. Note that the per-tracker form of `RATE_LIMIT_MAX_WAIT` is `<TRACKER>_MAX_WAIT`, which is the one name that does not simply take a prefix.
 - Garmin: `GARMIN_EMAIL` and `GARMIN_PASSWORD`, both optional once tokens exist.
 - Wahoo: `WAHOO_CLIENT_ID` and `WAHOO_CLIENT_SECRET`, **required on every run** because the refresh needs them, plus the optional `WAHOO_REDIRECT_URI` and `WAHOO_APP_TIER` (default `sandbox`).
@@ -140,7 +139,7 @@ The tests use no network and no real credentials. [tests/conftest.py](tests/conf
 - `mock_garmin`, a `garminconnect` client mock.
 - Sample GPX, TCX, and FIT-zip payloads, and sample Wahoo JSON.
 
-- `fake_time`, an autouse fixture that replaces the whole `src.ratelimit.time` reference with a clock that moves only when something sleeps. **It must replace `sleep` and `monotonic` together.** A no-op `sleep` beside a real clock leaves the time unchanged after a wait, so the windows never bind, the limiter admits more requests than a published limit allows, and no test can see it. Without the fixture the Wahoo retry tests take 30 seconds each.
+- `fake_time`, an autouse fixture that replaces the whole `src.ratelimit.time` reference with a clock that moves only when something sleeps. **It must replace `sleep` and `monotonic` together.** A no-op `sleep` beside a real clock leaves the time unchanged after a wait, so the windows never bind, the limiter admits more requests than a published limit allows, and no test can see it. It also records each wait in `slept`, which the pacing tests read. Without the fixture the Wahoo retry tests take 30 seconds each.
 - `clean_rate_limit_env`, an autouse fixture that hides the rate limit variables of the real environment. The shared names (`MAX_RETRIES`, `BACKOFF_MAX`) are generic enough to sit in a developer shell already. It lists the exact names that `load_policy` reads, because a match on the suffix alone would also delete `DATABASE_MAX_WAIT` and its like.
 
 Wahoo tests mock at the `requests.Session` level. When you change download logic, update `_DL_FORMATS` and the matching sample payloads and zip builders in conftest together. Give every mocked response a real `headers` dict: a bare `MagicMock` answers `headers.get()` with another mock, and the rate limit headers then read as something they are not.

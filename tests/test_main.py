@@ -7,7 +7,7 @@ import pytest
 
 from src.config import Config, DownloadTarget
 from src.main import main
-from src.ratelimit import BudgetExhaustedError
+from src.ratelimit import BudgetExhaustedError, RateLimitPolicy, Window
 from src.trackers.base import TrackerAuthError, UnsafeActivityIdError
 
 
@@ -18,7 +18,7 @@ def _config(trackers=("garmin",), targets=None):
         output_dir="/tmp/data",
         state_dir="/tmp/data/.state",
         days_back=7,
-        download_targets={name: targets or [DownloadTarget("FIT")] for name in trackers},
+        download_targets={name: targets or [DownloadTarget("FIT", "FIT")] for name in trackers},
     )
 
 
@@ -46,7 +46,7 @@ class TestMain:
             output_dir="/tmp/data",
             state_dir="/tmp/data/.state",
             days_back=7,
-            targets=[DownloadTarget("FIT")],
+            targets=[DownloadTarget("FIT", "FIT")],
         )
 
     @patch("src.main.download_new_activities", return_value=0)
@@ -103,16 +103,16 @@ class TestMultipleTrackers:
     def test_each_tracker_downloads_to_its_own_targets(self, mock_config, mock_download, registry):
         config = _config(["garmin", "wahoo"])
         config.download_targets = {
-            "garmin": [DownloadTarget("GPX", "app2"), DownloadTarget("FIT")],
-            "wahoo": [DownloadTarget("FIT")],
+            "garmin": [DownloadTarget("GPX", "app2"), DownloadTarget("FIT", "FIT")],
+            "wahoo": [DownloadTarget("FIT", "FIT")],
         }
         mock_config.return_value = config
 
         main()
 
         assert [call.kwargs["targets"] for call in mock_download.call_args_list] == [
-            [DownloadTarget("GPX", "app2"), DownloadTarget("FIT")],
-            [DownloadTarget("FIT")],
+            [DownloadTarget("GPX", "app2"), DownloadTarget("FIT", "FIT")],
+            [DownloadTarget("FIT", "FIT")],
         ]
 
     @patch("src.main.download_new_activities", return_value=1)
@@ -182,9 +182,9 @@ class TestRateLimitExitCode:
     def test_it_logs_the_limits_of_each_tracker(self, mock_config, mock_download, registry, caplog):
         mock_config.return_value = _config()
         tracker = registry["garmin"].from_env.return_value
-        tracker.limiter.policy.describe.return_value = "windows=20/60s"
+        tracker.limiter.policy = RateLimitPolicy(windows=(Window(20, 60),))
 
         with caplog.at_level(logging.INFO):
             main()
 
-        assert "windows=20/60s" in caplog.text
+        assert "Window(limit=20, seconds=60)" in caplog.text

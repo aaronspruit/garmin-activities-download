@@ -31,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 # Grammar of `<TRACKER>_RATE_LIMIT`: `20/60, 300/3600` is 20 requests in 60
 # seconds and 300 requests in 3600 seconds.
-_WINDOW_SEPARATOR = ","
-_WINDOW_DIVIDER = "/"
 
 # Value that removes every window of a policy, for an operator who paces the
 # runs with the schedule instead.
@@ -70,9 +68,6 @@ class Window:
     limit: int
     seconds: float
 
-    def __str__(self) -> str:
-        return f"{self.limit}/{self.seconds:g}s"
-
 
 @dataclass(frozen=True)
 class RateLimitPolicy:
@@ -99,14 +94,6 @@ class RateLimitPolicy:
     max_wait: float = 300.0
     max_downloads: int = 0
 
-    def describe(self) -> str:
-        """One line that names every limit, for the startup log."""
-        windows = ", ".join(str(window) for window in self.windows) or _NO_LIMIT
-        return (
-            f"windows={windows}, min_interval={self.min_interval:g}s, retries={self.max_retries}, "
-            f"max_wait={self.max_wait:g}s, max_downloads={self.max_downloads or 'unlimited'}"
-        )
-
 
 class RateLimiter:
     """Paces and retries the requests of one tracker.
@@ -115,32 +102,24 @@ class RateLimiter:
     burst at the start of a run cannot exceed a published limit. It also keeps
     `min_interval` seconds between two requests.
 
-    `sleep` and `clock` are replaceable, because the tests must not wait. Both
-    default to `None` and resolve to the `time` module at each call, so a test
-    that replaces `time.sleep` reaches a limiter that already exists.
+    `time.sleep` and `time.monotonic` are read at each call, not held from
+    construction, so a test that replaces the `time` reference of this module
+    reaches a limiter that already exists.
     """
 
-    def __init__(
-        self,
-        policy: RateLimitPolicy,
-        name: str = "tracker",
-        sleep=None,
-        clock=None,
-    ) -> None:
+    def __init__(self, policy: RateLimitPolicy, name: str = "tracker") -> None:
         self.policy = policy
         self.name = name
         self.requests = 0
-        self._sleep_func = sleep
-        self._clock_func = clock
         self._calls: list[deque[float]] = [deque() for _ in policy.windows]
         self._last: float | None = None
         self._blocked_until = 0.0
 
     def _sleep(self, seconds: float) -> None:
-        (self._sleep_func or time.sleep)(seconds)
+        time.sleep(seconds)
 
     def _clock(self) -> float:
-        return (self._clock_func or time.monotonic)()
+        return time.monotonic()
 
     def _wait_needed(self, now: float) -> float:
         """Seconds until the next counted request is inside every limit."""
@@ -256,11 +235,11 @@ def _parse_windows(raw: str, variable: str) -> tuple[Window, ...]:
         return ()
 
     windows: list[Window] = []
-    for entry in (part.strip() for part in raw.split(_WINDOW_SEPARATOR)):
+    for entry in (part.strip() for part in raw.split(",")):
         if not entry:
             continue
 
-        count, divider, seconds = entry.partition(_WINDOW_DIVIDER)
+        count, divider, seconds = entry.partition("/")
         if not divider:
             raise ValueError(
                 f"Invalid {variable} entry {entry!r}. Each entry is `REQUESTS/SECONDS`, for example `20/60`"

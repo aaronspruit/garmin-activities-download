@@ -2,10 +2,8 @@
 
 import logging
 import os
-import re
 from dataclasses import dataclass
 
-from src.ratelimit import load_policy
 from src.trackers import TRACKER_CLASSES
 
 logger = logging.getLogger(__name__)
@@ -21,16 +19,9 @@ _ILLEGAL_FOLDER_CHARS = ("\\", "\0")
 # the format from the entry, the tracker from the variable the entry came from --
 # so a destination is a plain path by the time the downloader sees it.
 _PLACEHOLDERS = ("format", "tracker")
-_PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
-
-# Separators of the DOWNLOAD_TARGETS grammar: `folder=FMT+FMT, folder=FMT`.
-_ENTRY_SEPARATOR = ","
-_FOLDER_SEPARATOR = "="
-_FORMAT_SEPARATOR = "+"
 
 _TARGETS_VAR = "DOWNLOAD_TARGETS"
 _TARGETS_SUFFIX = f"_{_TARGETS_VAR}"
-_LEGACY_VAR = "DOWNLOAD_FORMATS"
 
 # Dedup markers live beside the activity files by default, so the existing data
 # volume carries them with no extra mount. It is hidden so that a consumer
@@ -48,23 +39,11 @@ class DownloadTarget:
     """A single download destination: a format, and the folder that receives it.
 
     `folder` is a concrete path relative to `output_dir`, with any template
-    placeholders already resolved. It defaults to the format name, which is the
-    layout a bare `FIT` entry produces.
+    placeholders already resolved. A bare `FIT` entry gives a folder of `FIT`.
     """
 
     format: str
-    folder: str | None = None
-
-    def __post_init__(self) -> None:
-        # Canonical form, so `DownloadTarget("FIT")` and `DownloadTarget("FIT",
-        # "FIT")` compare equal and deduplicate against each other.
-        if self.folder is None:
-            object.__setattr__(self, "folder", self.format)
-
-    @property
-    def path(self) -> str:
-        """Destination path relative to `output_dir`."""
-        return self.folder
+    folder: str
 
 
 @dataclass
@@ -108,27 +87,28 @@ def _validate_folder(folder: str, entry: str) -> str:
 def _render_folder(template: str, entry: str, tracker: str, fmt: str) -> str:
     """Substitute `{format}` and `{tracker}` in a destination template.
 
-    Done by hand rather than with `str.format` so that an unknown placeholder is
-    a configuration error with a useful message, instead of a `KeyError` or a
-    literal `{ingesting_app}` directory.
+    `format_map` reports an unknown placeholder as a `KeyError` and an
+    unbalanced brace as a `ValueError`. Both become a configuration error that
+    names the entry, instead of a traceback or a literal `{ingesting_app}`
+    directory.
     """
-    for name in _PLACEHOLDER_RE.findall(template):
-        if name not in _PLACEHOLDERS:
-            raise ValueError(
-                f"Invalid {_TARGETS_VAR} entry {entry!r}: unknown placeholder {{{name}}}. "
-                f"Valid placeholders: {', '.join('{%s}' % p for p in _PLACEHOLDERS)}"
-            )
-
-    rendered = template.replace("{format}", fmt).replace("{tracker}", tracker)
-    if "{" in rendered or "}" in rendered:
-        raise ValueError(f"Invalid {_TARGETS_VAR} entry {entry!r}: unbalanced {{ or }} in the destination folder")
-    return rendered
+    try:
+        return template.format_map({"format": fmt, "tracker": tracker})
+    except (KeyError, IndexError) as e:
+        raise ValueError(
+            f"Invalid {_TARGETS_VAR} entry {entry!r}: unknown placeholder {{{e.args[0]}}}. "
+            f"Valid placeholders: {', '.join('{%s}' % p for p in _PLACEHOLDERS)}"
+        ) from None
+    except ValueError:
+        raise ValueError(
+            f"Invalid {_TARGETS_VAR} entry {entry!r}: unbalanced {{ or }} in the destination folder"
+        ) from None
 
 
 def _parse_formats(raw: str, entry: str) -> list[str]:
     """Parse the `FMT+FMT` side of an entry, keeping first-occurrence order."""
     formats: list[str] = []
-    for token in raw.split(_FORMAT_SEPARATOR):
+    for token in raw.split("+"):
         fmt = token.strip().upper()
         if fmt not in VALID_DOWNLOAD_FORMATS:
             raise ValueError(
@@ -149,13 +129,13 @@ def _parse_targets(raw: str, tracker: str, variable: str = _TARGETS_VAR) -> list
     and `{tracker}` placeholders. Repeated format/folder pairs collapse into one
     target, so a destination is only ever filled once.
     """
-    entries = [entry.strip() for entry in raw.split(_ENTRY_SEPARATOR) if entry.strip()]
+    entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
     if not entries:
         raise ValueError(f"{variable} must not be empty")
 
     targets: list[DownloadTarget] = []
     for entry in entries:
-        left, separator, right = entry.partition(_FOLDER_SEPARATOR)
+        left, separator, right = entry.partition("=")
         # A bare format is shorthand for `{format}=FORMAT`, which is the layout
         # every configuration used before destinations existed.
         template = left.strip() if separator else "{format}"
@@ -170,56 +150,13 @@ def _parse_targets(raw: str, tracker: str, variable: str = _TARGETS_VAR) -> list
     return targets
 
 
-def _parse_legacy_formats(raw: str) -> list[DownloadTarget]:
-    """Parse a deprecated DOWNLOAD_FORMATS value into targets.
-
-    The old grammar nests a subfolder under its format (`FIT:archive` ->
-    `FIT/archive`), which is the opposite of a destination that may hold several
-    formats. The two are never mixed, so this stays a separate parser rather
-    than a special case in the new one.
-    """
-    entries = [entry.strip() for entry in raw.split(_ENTRY_SEPARATOR) if entry.strip()]
-    if not entries:
-        raise ValueError(f"{_LEGACY_VAR} must not be empty")
-
-    targets: list[DownloadTarget] = []
-    for entry in entries:
-        fmt, separator, raw_folder = entry.partition(":")
-        fmt = fmt.strip().upper()
-        if fmt not in VALID_DOWNLOAD_FORMATS:
-            raise ValueError(
-                f"Invalid {_LEGACY_VAR} format {fmt!r} in entry {entry!r}. "
-                f"Valid options: {sorted(VALID_DOWNLOAD_FORMATS)}"
-            )
-
-        folder = fmt
-        if separator:
-            subfolder = raw_folder.strip()
-            if not subfolder:
-                raise ValueError(f"Invalid {_LEGACY_VAR} entry {entry!r}: subfolder name must not be empty")
-            if "/" in subfolder or "\\" in subfolder or "\0" in subfolder:
-                raise ValueError(
-                    f"Invalid {_LEGACY_VAR} entry {entry!r}: "
-                    f"subfolder name must be a single folder, without path separators"
-                )
-            if subfolder in (".", ".."):
-                raise ValueError(f"Invalid {_LEGACY_VAR} entry {entry!r}: subfolder name must not be {subfolder!r}")
-            folder = f"{fmt}/{subfolder}"
-
-        target = DownloadTarget(format=fmt, folder=folder)
-        if target not in targets:
-            targets.append(target)
-
-    return targets
-
-
 def _parse_trackers(raw: str) -> list[str]:
     """Parse and validate a comma-separated TRACKERS value.
 
     Each entry names a tracker in the registry. Names are case-insensitive and a
     repeated name collapses into one, keeping first-occurrence order.
     """
-    entries = [entry.strip().lower() for entry in raw.split(_ENTRY_SEPARATOR) if entry.strip()]
+    entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
     if not entries:
         raise ValueError("TRACKERS must not be empty")
 
@@ -258,9 +195,9 @@ def _assert_within(output_dir: str, targets: dict[str, list[DownloadTarget]]) ->
     root = os.path.realpath(output_dir)
     for tracker_targets in targets.values():
         for target in tracker_targets:
-            resolved = os.path.realpath(os.path.join(output_dir, target.path))
+            resolved = os.path.realpath(os.path.join(output_dir, target.folder))
             if resolved != root and not resolved.startswith(root + os.sep):
-                raise ValueError(f"Destination folder {target.path!r} resolves outside the output directory")
+                raise ValueError(f"Destination folder {target.folder!r} resolves outside the output directory")
 
 
 def _load_download_targets(trackers: list[str], output_dir: str) -> dict[str, list[DownloadTarget]]:
@@ -271,24 +208,8 @@ def _load_download_targets(trackers: list[str], output_dir: str) -> dict[str, li
     cannot supply is an error when that tracker asked for it by name, and a
     warning from the downloader when it only inherited the shared default.
     """
-    legacy = os.environ.get(_LEGACY_VAR, "").strip()
     shared = os.environ.get(_TARGETS_VAR, "").strip()
     per_tracker = _tracker_target_vars()
-
-    if legacy and (shared or per_tracker):
-        raise ValueError(
-            f"{_LEGACY_VAR} and {_TARGETS_VAR} must not both be set. "
-            f"{_LEGACY_VAR} is deprecated: an entry is now `folder=FORMAT` instead of `FORMAT:subfolder`"
-        )
-
-    if legacy:
-        logger.warning(
-            "%s is deprecated and will be removed. Use %s, where an entry is `folder=FORMAT[+FORMAT]`",
-            _LEGACY_VAR,
-            _TARGETS_VAR,
-        )
-        targets = _parse_legacy_formats(legacy)
-        return {name: list(targets) for name in trackers}
 
     for name, (key, _) in per_tracker.items():
         if name not in trackers:
@@ -315,25 +236,12 @@ def _load_download_targets(trackers: list[str], output_dir: str) -> dict[str, li
     return resolved
 
 
-def _validate_rate_limits(trackers: list[str]) -> None:
-    """Stop at startup on a rate limit variable that cannot be used.
-
-    Each tracker builds its own limiter later, with the same function. This call
-    adds nothing to the configuration. It only makes a typo in
-    `<TRACKER>_RATE_LIMIT` stop the run before the first request, which is what
-    every other variable already does.
-    """
-    for name in trackers:
-        load_policy(name, TRACKER_CLASSES[name].rate_limit)
-
-
 def load_config() -> Config:
     """Load configuration from environment variables and Docker secrets."""
     output_dir = os.environ.get("OUTPUT_DIR", "/app/data")
     trackers = _parse_trackers(os.environ.get("TRACKERS", "garmin"))
     download_targets = _load_download_targets(trackers, output_dir)
     _assert_within(output_dir, download_targets)
-    _validate_rate_limits(trackers)
 
     return Config(
         trackers=trackers,
