@@ -1,2 +1,2 @@
-garminconnect==0.3.10
+garminconnect==0.3.11
 requests==2.34.2
