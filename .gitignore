@@ -14,6 +14,7 @@ data/
 tokens/
 .copilot-tracking/
 .claude/
+CLAUDE.local.md
 
 # OS / editor cruft
 .DS_Store
