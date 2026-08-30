@@ -36,7 +36,9 @@ docker build -t garmin-activities-download:test .
 
 CI runs Python 3.14, which matches the `python:3.14-slim` base image. The project needs 3.12 or later. The ruff line length is 120.
 
-[Dockerfile](Dockerfile) has four stages. `base` holds the shared user and workdir. `builder` installs [requirements.txt](requirements.txt) into `/opt/venv`. `dev` keeps `pip` for the dev container, which [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) selects with `"target": "dev"`. `runtime` is last, so a plain `docker build` produces it.
+[Dockerfile](Dockerfile) has four stages. `base` applies the Debian security updates and holds the shared user and workdir. `builder` installs [requirements.txt](requirements.txt) into `/opt/venv`. `dev` keeps `pip` for the dev container, which [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) selects with `"target": "dev"`. `runtime` is last, so a plain `docker build` produces it.
+
+**`base` runs `apt-get upgrade`, because the base image is rebuilt on the Python release schedule and not on the Debian security one.** Without it, the image keeps OS packages that Debian has already patched, and the Trivy job fails on a fix it can see upstream.
 
 **Nothing added to the `runtime` stage can reintroduce `pip`.** That stage deletes `pip`, `ensurepip`, and other build-time parts of the base image, which is what keeps the Trivy job green. `pip` vendors its own dependencies and, since version 26.2, ships `pip/_vendor/bom.cdx.json` to declare them. A scanner reads that file as an installed package list and reports their CVEs, even though nothing in [src/](src/) imports them.
 

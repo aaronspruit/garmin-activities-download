@@ -7,6 +7,16 @@ FROM python:3.14-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# The base image is rebuilt on the Python release schedule, not on the Debian
+# security schedule. It can therefore contain OS packages that Debian has
+# already patched. The Trivy job fails the build on exactly that case: a HIGH
+# or CRITICAL vulnerability that has a fix upstream. Install the patched
+# packages here, because nothing in this repository controls when the base
+# image is rebuilt.
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    rm -rf /var/lib/apt/lists/*
+
 # Fixed UID/GID 1000. Deployments needing a different user override it at run
 # time -- compose `user:`, k8s `securityContext.runAsUser` -- instead of
 # rebuilding, since /app/data and /app/tokens are always mount points and the
