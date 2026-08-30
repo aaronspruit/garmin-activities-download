@@ -15,6 +15,12 @@
   // problems without any build arguments.
   "remoteUser": "appuser",
   "updateRemoteUserUID": true,
+  // Mount the repository at its host path instead of at /workspaces/<repo>.
+  // Claude Code keys each session transcript on the working directory. A
+  // different path in the container therefore hides every session that the
+  // host recorded, and `claude --continue` starts from nothing.
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=cached",
+  "workspaceFolder": "${localWorkspaceFolder}",
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": { "installZsh": true },
     "ghcr.io/devcontainers/features/git:1": {},
@@ -28,26 +34,38 @@
     // VS Code extension via its own feature metadata.
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
   },
-  // Share the host's Claude Code home so login credentials, personal skills
-  // (~/.claude/skills), agents and settings survive container rebuilds instead
-  // of being recreated in a throwaway container layer. updateRemoteUserUID
-  // remaps appuser to the host UID, so the bind mount stays writable.
-  // ~/.agents is mounted too: several entries in ~/.claude/skills are symlinks
-  // to ~/.agents/skills/<name>, which dangle (and so load no skill) unless the
-  // link target is present at the same path inside the container.
+  // Share the whole host home, at the same absolute path it has on the host.
+  //
+  // Claude Code keeps its state in two places: the ~/.claude directory and the
+  // ~/.claude.json file beside it. That file holds the MCP servers, the enabled
+  // plugins and the per-project trust state. Claude Code rewrites it with an
+  // atomic rename, so a single-file bind mount becomes stale after the first
+  // write. A directory mount is the only way to share it, and the only
+  // directory that contains it is the host home.
+  //
+  // The identical path on both sides also makes the absolute paths that the
+  // host writes into ~/.claude resolve here. One example is the installLocation
+  // of each plugin marketplace in plugins/known_marketplaces.json.
+  //
+  // This needs a POSIX home directory on the host: WSL, Linux or macOS. The
+  // container keeps its own shell configuration, because ${localEnv:HOME} and
+  // /home/appuser are different paths.
   "mounts": [
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/home/appuser/.claude,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents,target=/home/appuser/.agents,type=bind,consistency=cached"
+    "source=${localEnv:HOME},target=${localEnv:HOME},type=bind,consistency=cached"
   ],
-  // The image only installs requirements.txt; dev tooling (pytest, ruff, ...)
-  // must be added at create time. --user because appuser cannot write to the
-  // system site-packages.
-  "postCreateCommand": "pip install --user -r requirements.txt -r requirements-dev.txt",
-  // The workspace mounts at /workspaces/<repo>, not the Dockerfile's /app, so
-  // point interactive `python -m src.main` runs at the in-workspace dirs.
+  "containerEnv": {
+    "HOST_HOME": "${localEnv:HOME}"
+  },
+  // link-claude-home.sh points ~/.claude, ~/.agents and ~/.claude.json of
+  // appuser at the host home. The image installs requirements.txt only, so the
+  // dev tools (pytest, ruff, ...) come next. --user because appuser cannot
+  // write to the system site-packages.
+  "postCreateCommand": "${containerWorkspaceFolder}/.devcontainer/link-claude-home.sh && pip install --user -r requirements.txt -r requirements-dev.txt",
+  // The workspace is not the Dockerfile's /app, so point interactive
+  // `python -m src.main` runs at the repository folders.
   "remoteEnv": {
-    "OUTPUT_DIR": "/workspaces/garmin-activities-download/data",
-    "TOKENS_DIR": "/workspaces/garmin-activities-download/tokens"
+    "OUTPUT_DIR": "${containerWorkspaceFolder}/data",
+    "TOKENS_DIR": "${containerWorkspaceFolder}/tokens"
   },
   "customizations": {
     "vscode": {
