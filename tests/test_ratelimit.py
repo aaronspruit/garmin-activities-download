@@ -1,7 +1,7 @@
 """Tests for the rate limiter, the retries, and the policy loader.
 
-A fake clock drives every test. Sleeping moves that clock forward, so the tests
-see the exact waits without waiting for them.
+The autouse `fake_time` fixture drives every test. Sleeping moves that clock
+forward, so the tests see the exact waits without waiting for them.
 """
 
 import pytest
@@ -17,80 +17,59 @@ from src.ratelimit import (
 )
 
 
-class FakeClock:
-    """A clock that only moves when something sleeps."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-        self.slept: list[float] = []
-
-    def __call__(self) -> float:
-        return self.now
-
-    def sleep(self, seconds: float) -> None:
-        self.slept.append(seconds)
-        self.now += seconds
-
-
-def _limiter(clock, **policy_fields) -> RateLimiter:
+def _limiter(**policy_fields) -> RateLimiter:
     fields = {"windows": (), "min_interval": 0.0, "max_retries": 0}
     fields.update(policy_fields)
-    return RateLimiter(RateLimitPolicy(**fields), name="test", sleep=clock.sleep, clock=clock)
+    return RateLimiter(RateLimitPolicy(**fields), name="test")
 
 
 class TestPacing:
-    def test_the_first_request_never_waits(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, min_interval=5.0)
+    def test_the_first_request_never_waits(self, fake_time):
+        limiter = _limiter(min_interval=5.0)
 
         limiter.acquire()
 
-        assert clock.slept == []
+        assert fake_time.slept == []
 
-    def test_it_keeps_the_minimum_interval(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, min_interval=2.0)
+    def test_it_keeps_the_minimum_interval(self, fake_time):
+        limiter = _limiter(min_interval=2.0)
 
         limiter.acquire()
         limiter.acquire()
 
-        assert clock.slept == [2.0]
+        assert fake_time.slept == [2.0]
 
-    def test_a_window_stops_a_burst(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(3, 60),))
+    def test_a_window_stops_a_burst(self, fake_time):
+        limiter = _limiter(windows=(Window(3, 60),))
 
         for _ in range(4):
             limiter.acquire()
 
         # Three requests pass at once. The fourth waits for the first to leave
         # the 60 second window.
-        assert clock.slept == [60.0]
+        assert fake_time.slept == [60.0]
 
-    def test_a_window_frees_a_slot_when_time_passes(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(2, 60),))
-
-        limiter.acquire()
-        limiter.acquire()
-        clock.now += 61
+    def test_a_window_frees_a_slot_when_time_passes(self, fake_time):
+        limiter = _limiter(windows=(Window(2, 60),))
 
         limiter.acquire()
+        limiter.acquire()
+        fake_time.now += 61
 
-        assert clock.slept == []
+        limiter.acquire()
 
-    def test_the_shortest_window_binds_first(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(2, 10), Window(10, 3600)))
+        assert fake_time.slept == []
+
+    def test_the_shortest_window_binds_first(self, fake_time):
+        limiter = _limiter(windows=(Window(2, 10), Window(10, 3600)))
 
         for _ in range(3):
             limiter.acquire()
 
-        assert clock.slept == [10.0]
+        assert fake_time.slept == [10.0]
 
     def test_it_counts_every_request(self):
-        clock = FakeClock()
-        limiter = _limiter(clock)
+        limiter = _limiter()
 
         for _ in range(5):
             limiter.acquire()
@@ -100,45 +79,40 @@ class TestPacing:
 
 class TestBudget:
     def test_a_wait_longer_than_max_wait_stops_the_run(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(1, 86400),), max_wait=300.0)
+        limiter = _limiter(windows=(Window(1, 86400),), max_wait=300.0)
 
         limiter.acquire()
 
         with pytest.raises(BudgetExhaustedError, match="more than the 300s"):
             limiter.acquire()
 
-    def test_it_does_not_sleep_when_it_gives_up(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(1, 86400),), max_wait=10.0)
+    def test_it_does_not_sleep_when_it_gives_up(self, fake_time):
+        limiter = _limiter(windows=(Window(1, 86400),), max_wait=10.0)
         limiter.acquire()
 
         with pytest.raises(BudgetExhaustedError):
             limiter.acquire()
 
-        assert clock.slept == []
+        assert fake_time.slept == []
 
-    def test_a_wait_inside_max_wait_is_taken(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(1, 60),), max_wait=300.0)
+    def test_a_wait_inside_max_wait_is_taken(self, fake_time):
+        limiter = _limiter(windows=(Window(1, 60),), max_wait=300.0)
 
         limiter.acquire()
         limiter.acquire()
 
-        assert clock.slept == [60.0]
+        assert fake_time.slept == [60.0]
 
-    def test_penalize_blocks_the_next_request(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_wait=300.0)
+    def test_penalize_blocks_the_next_request(self, fake_time):
+        limiter = _limiter(max_wait=300.0)
 
         limiter.penalize(45.0)
         limiter.acquire()
 
-        assert clock.slept == [45.0]
+        assert fake_time.slept == [45.0]
 
     def test_a_long_penalty_stops_the_run(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_wait=300.0)
+        limiter = _limiter(max_wait=300.0)
 
         limiter.penalize(4000.0)
 
@@ -148,8 +122,7 @@ class TestBudget:
 
 class TestRetries:
     def test_a_call_that_works_runs_once(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=3)
+        limiter = _limiter(max_retries=3)
         calls = []
 
         result = limiter.call(lambda: calls.append(1) or "done")
@@ -158,8 +131,7 @@ class TestRetries:
         assert len(calls) == 1
 
     def test_it_retries_a_rate_limit_error(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=3, backoff_initial=4.0, max_wait=300.0)
+        limiter = _limiter(max_retries=3, backoff_initial=4.0, max_wait=300.0)
         attempts = []
 
         def flaky():
@@ -172,8 +144,7 @@ class TestRetries:
         assert len(attempts) == 3
 
     def test_it_retries_a_transient_error(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=2, backoff_initial=1.0, max_wait=300.0)
+        limiter = _limiter(max_retries=2, backoff_initial=1.0, max_wait=300.0)
         attempts = []
 
         def flaky():
@@ -186,8 +157,7 @@ class TestRetries:
         assert len(attempts) == 3
 
     def test_it_reports_the_error_after_the_last_retry(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=1, backoff_initial=1.0, max_wait=300.0)
+        limiter = _limiter(max_retries=1, backoff_initial=1.0, max_wait=300.0)
 
         def always_fails():
             raise RateLimitError("still limited")
@@ -195,9 +165,8 @@ class TestRetries:
         with pytest.raises(RateLimitError, match="still limited"):
             limiter.call(always_fails)
 
-    def test_the_backoff_grows(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=3, backoff_initial=10.0, backoff_max=1000.0, max_wait=3000.0)
+    def test_the_backoff_grows(self, fake_time):
+        limiter = _limiter(max_retries=3, backoff_initial=10.0, backoff_max=1000.0, max_wait=3000.0)
 
         def always_fails():
             raise TransientError("bad gateway")
@@ -207,13 +176,12 @@ class TestRetries:
 
         # Jitter keeps each delay between half of the base and the base, and the
         # base doubles each time: 10, 20, 40.
-        assert len(clock.slept) == 3
-        for delay, base in zip(clock.slept, [10.0, 20.0, 40.0], strict=True):
+        assert len(fake_time.slept) == 3
+        for delay, base in zip(fake_time.slept, [10.0, 20.0, 40.0], strict=True):
             assert base / 2 <= delay <= base
 
-    def test_the_backoff_stops_at_its_maximum(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=4, backoff_initial=100.0, backoff_max=200.0, max_wait=3000.0)
+    def test_the_backoff_stops_at_its_maximum(self, fake_time):
+        limiter = _limiter(max_retries=4, backoff_initial=100.0, backoff_max=200.0, max_wait=3000.0)
 
         def always_fails():
             raise TransientError("bad gateway")
@@ -221,11 +189,10 @@ class TestRetries:
         with pytest.raises(TransientError):
             limiter.call(always_fails)
 
-        assert max(clock.slept) <= 200.0
+        assert max(fake_time.slept) <= 200.0
 
-    def test_it_waits_as_long_as_the_tracker_asked(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=1, backoff_initial=1.0, max_wait=300.0)
+    def test_it_waits_as_long_as_the_tracker_asked(self, fake_time):
+        limiter = _limiter(max_retries=1, backoff_initial=1.0, max_wait=300.0)
 
         def always_fails():
             raise RateLimitError("slow down", retry_after=120.0)
@@ -233,12 +200,11 @@ class TestRetries:
         with pytest.raises(RateLimitError):
             limiter.call(always_fails)
 
-        assert clock.slept == [120.0]
+        assert fake_time.slept == [120.0]
 
-    def test_a_wait_the_run_cannot_take_stops_it(self):
+    def test_a_wait_the_run_cannot_take_stops_it(self, fake_time):
         """A daily limit gives a reset of hours, which must not hold the run open."""
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=3, backoff_initial=1.0, max_wait=300.0)
+        limiter = _limiter(max_retries=3, backoff_initial=1.0, max_wait=300.0)
 
         def always_fails():
             raise RateLimitError("daily limit", retry_after=41220.0)
@@ -246,11 +212,10 @@ class TestRetries:
         with pytest.raises(BudgetExhaustedError, match="41220s"):
             limiter.call(always_fails)
 
-        assert clock.slept == []
+        assert fake_time.slept == []
 
-    def test_no_retries_reports_at_once(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=0)
+    def test_no_retries_reports_at_once(self, fake_time):
+        limiter = _limiter(max_retries=0)
 
         def always_fails():
             raise RateLimitError("slow down")
@@ -258,32 +223,29 @@ class TestRetries:
         with pytest.raises(RateLimitError):
             limiter.call(always_fails)
 
-        assert clock.slept == []
+        assert fake_time.slept == []
 
 
 class TestCountedAndUncounted:
     def test_a_counted_call_spends_the_budget(self):
-        clock = FakeClock()
-        limiter = _limiter(clock)
+        limiter = _limiter()
 
         limiter.call(lambda: "done")
 
         assert limiter.requests == 1
 
-    def test_an_uncounted_call_spends_nothing(self):
+    def test_an_uncounted_call_spends_nothing(self, fake_time):
         """Wahoo exempts the file downloads from its limits."""
-        clock = FakeClock()
-        limiter = _limiter(clock, windows=(Window(1, 3600),))
+        limiter = _limiter(windows=(Window(1, 3600),))
 
         for _ in range(5):
             limiter.retry(lambda: "done")
 
         assert limiter.requests == 0
-        assert clock.slept == []
+        assert fake_time.slept == []
 
     def test_an_uncounted_call_still_retries(self):
-        clock = FakeClock()
-        limiter = _limiter(clock, max_retries=2, backoff_initial=1.0, max_wait=300.0)
+        limiter = _limiter(max_retries=2, backoff_initial=1.0, max_wait=300.0)
         attempts = []
 
         def flaky():
@@ -398,19 +360,6 @@ class TestLoadPolicy:
         default = RateLimitPolicy(min_interval=2.0)
 
         assert load_policy("garmin", default).min_interval == 2.0
-
-
-class TestDescribe:
-    def test_it_names_every_window(self):
-        policy = RateLimitPolicy(windows=(Window(20, 60), Window(300, 3600)))
-
-        assert "20/60s, 300/3600s" in policy.describe()
-
-    def test_it_reports_no_cap_in_words(self):
-        assert "max_downloads=unlimited" in RateLimitPolicy(max_downloads=0).describe()
-
-    def test_it_reports_no_windows_in_words(self):
-        assert "windows=none" in RateLimitPolicy(windows=()).describe()
 
 
 class TestSharedFixture:

@@ -24,7 +24,6 @@ class TestLoadConfig:
         monkeypatch.delenv("DAYS_BACK", raising=False)
         monkeypatch.delenv("TOKENS_DIR", raising=False)
         monkeypatch.delenv("OUTPUT_DIR", raising=False)
-        monkeypatch.delenv("DOWNLOAD_FORMATS", raising=False)
         monkeypatch.delenv("DOWNLOAD_TARGETS", raising=False)
 
         config = load_config()
@@ -33,7 +32,7 @@ class TestLoadConfig:
         assert config.days_back == 7
         assert config.tokens_dir == "/app/tokens"
         assert config.output_dir == "/app/data"
-        assert config.download_targets == {"garmin": [DownloadTarget("FIT")]}
+        assert config.download_targets == {"garmin": [DownloadTarget("FIT", "FIT")]}
 
     def test_targets_are_resolved_for_each_enabled_tracker(self, monkeypatch):
         monkeypatch.setenv("TRACKERS", "garmin,wahoo")
@@ -103,25 +102,18 @@ class TestParseTrackers:
             load_config()
 
 
-class TestDownloadTargetPath:
+class TestDownloadTargetFolder:
     """A destination is a folder that receives a format, not a folder below one."""
 
-    def test_path_is_the_format_when_no_folder_is_given(self):
-        assert DownloadTarget("FIT").path == "FIT"
+    def test_the_folder_is_kept_as_written(self):
+        assert DownloadTarget("FIT", "app2").folder == "app2"
 
-    def test_path_is_the_folder_as_written(self):
-        assert DownloadTarget("FIT", "app2").path == "app2"
-
-    def test_path_keeps_every_level_of_a_nested_folder(self):
-        assert DownloadTarget("GPX", "GPX/user@example.com").path == "GPX/user@example.com"
-
-    def test_an_omitted_folder_equals_one_named_after_the_format(self):
-        """Canonical form, so the two spellings deduplicate against each other."""
-        assert DownloadTarget("FIT") == DownloadTarget("FIT", "FIT")
+    def test_the_folder_keeps_every_level_of_a_nested_path(self):
+        assert DownloadTarget("GPX", "GPX/user@example.com").folder == "GPX/user@example.com"
 
     def test_two_formats_can_share_one_folder(self):
         assert DownloadTarget("GPX", "app2") != DownloadTarget("FIT", "app2")
-        assert DownloadTarget("GPX", "app2").path == DownloadTarget("FIT", "app2").path
+        assert DownloadTarget("GPX", "app2").folder == DownloadTarget("FIT", "app2").folder
 
 
 class TestParseDownloadTargets:
@@ -254,7 +246,21 @@ class TestDestinationPlaceholders:
     def test_unknown_placeholder_raises_value_error(self, monkeypatch):
         monkeypatch.setenv("DOWNLOAD_TARGETS", "{ingesting_app}=FIT")
 
-        with pytest.raises(ValueError, match="unknown placeholder"):
+        # The message names what was left over, so the typo is easy to find.
+        with pytest.raises(ValueError, match=r"unknown or unbalanced placeholder in '\{ingesting_app\}'"):
+            load_config()
+
+    def test_a_doubled_brace_raises_value_error(self, monkeypatch):
+        """The grammar has no escape, so `{{` is a mistake and not one brace."""
+        monkeypatch.setenv("DOWNLOAD_TARGETS", "app2/{{ingesting_app}}=FIT")
+
+        with pytest.raises(ValueError, match="unknown or unbalanced"):
+            load_config()
+
+    def test_a_positional_field_raises_value_error(self, monkeypatch):
+        monkeypatch.setenv("DOWNLOAD_TARGETS", "app2/{0}=FIT")
+
+        with pytest.raises(ValueError, match="unknown or unbalanced"):
             load_config()
 
     def test_unbalanced_brace_raises_value_error(self, monkeypatch):
@@ -334,96 +340,3 @@ class TestPerTrackerTargets:
         config = load_config()
 
         assert DownloadTarget("GPX", "GPX") in config.download_targets["wahoo"]
-
-
-class TestLegacyDownloadFormats:
-    """DOWNLOAD_FORMATS keeps working, with its own grammar, until it is removed."""
-
-    def test_bare_formats(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "gpx, tcx")
-
-        assert load_config().download_targets["garmin"] == [DownloadTarget("GPX"), DownloadTarget("TCX")]
-
-    def test_subfolder_still_nests_under_the_format(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT:user@example.com")
-
-        targets = load_config().download_targets["garmin"]
-
-        assert targets == [DownloadTarget("FIT", "FIT/user@example.com")]
-        assert targets[0].path == "FIT/user@example.com"
-
-    def test_same_format_in_several_subfolders(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT, FIT:strava-inbox, FIT:archive, GPX")
-
-        assert [t.path for t in load_config().download_targets["garmin"]] == [
-            "FIT",
-            "FIT/strava-inbox",
-            "FIT/archive",
-            "GPX",
-        ]
-
-    def test_applies_to_every_tracker(self, monkeypatch):
-        monkeypatch.setenv("TRACKERS", "garmin,wahoo")
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT:inbox")
-
-        config = load_config()
-
-        assert config.download_targets["garmin"] == config.download_targets["wahoo"]
-
-    def test_deduplication_keeps_first_occurrence_order(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "GPX:a,FIT:b,GPX:a,TCX:c")
-
-        assert [t.path for t in load_config().download_targets["garmin"]] == ["GPX/a", "FIT/b", "TCX/c"]
-
-    def test_same_subfolder_under_two_formats_stays_separate(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "GPX:inbox,TCX:inbox")
-
-        assert [t.path for t in load_config().download_targets["garmin"]] == ["GPX/inbox", "TCX/inbox"]
-
-    def test_logs_a_deprecation_warning(self, monkeypatch, caplog):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT")
-
-        load_config()
-
-        assert "DOWNLOAD_FORMATS is deprecated" in caplog.text
-
-    @pytest.mark.parametrize("folder", ["nested/inbox", "..", ".", "../escape", "back\\slash", "/absolute", ""])
-    def test_unsafe_subfolder_names_raise_value_error(self, monkeypatch, folder):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", f"FIT:{folder}")
-
-        with pytest.raises(ValueError):
-            load_config()
-
-    def test_invalid_format_raises_value_error(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "bogus:inbox")
-
-        with pytest.raises(ValueError, match="Invalid DOWNLOAD_FORMATS format"):
-            load_config()
-
-    def test_empty_value_raises_value_error(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", " , ")
-
-        with pytest.raises(ValueError, match="must not be empty"):
-            load_config()
-
-
-class TestVariableConflicts:
-    def test_legacy_and_new_variable_together_raise_value_error(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT")
-        monkeypatch.setenv("DOWNLOAD_TARGETS", "app2=FIT")
-
-        with pytest.raises(ValueError, match="must not both be set"):
-            load_config()
-
-    def test_legacy_and_per_tracker_variable_together_raise_value_error(self, monkeypatch):
-        monkeypatch.setenv("DOWNLOAD_FORMATS", "FIT")
-        monkeypatch.setenv("GARMIN_DOWNLOAD_TARGETS", "app2=FIT")
-
-        with pytest.raises(ValueError, match="must not both be set"):
-            load_config()
-
-    def test_neither_variable_defaults_to_fit(self, monkeypatch):
-        monkeypatch.delenv("DOWNLOAD_FORMATS", raising=False)
-        monkeypatch.delenv("DOWNLOAD_TARGETS", raising=False)
-
-        assert load_config().download_targets["garmin"] == [DownloadTarget("FIT")]

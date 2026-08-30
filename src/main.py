@@ -21,19 +21,11 @@ logger = logging.getLogger(__name__)
 _CODE_SEVERITY = [3, 1, 2, 0]
 
 
-def _worst(codes: list[int]) -> int:
-    """Return the most serious of the given exit codes."""
-    for code in _CODE_SEVERITY:
-        if code in codes:
-            return code
-    return 0
-
-
 def _run_tracker(name: str, config) -> tuple[int, int]:
     """Run one tracker. Returns (exit code, files downloaded)."""
     try:
         tracker = TRACKER_CLASSES[name].from_env(config.tokens_dir)
-        logger.info("[%s] Rate limit: %s", name, tracker.limiter.policy.describe())
+        logger.info("[%s] Rate limit: %s", name, tracker.limiter.policy)
         tracker.authenticate()
         count = download_new_activities(
             tracker,
@@ -79,7 +71,7 @@ def main() -> int:
         config.state_dir,
     )
     for name, targets in config.download_targets.items():
-        logger.info("[%s] Targets: %s", name, ", ".join(f"{t.format}->{t.path}" for t in targets))
+        logger.info("[%s] Targets: %s", name, ", ".join(f"{t.format}->{t.folder}" for t in targets))
 
     # One tracker failing must not stop the others: an expired Wahoo token
     # should never cost a scheduled run its Garmin activities.
@@ -91,7 +83,7 @@ def main() -> int:
         total += count
 
     logger.info("Completed: %d new activities downloaded across %d tracker(s)", total, len(config.trackers))
-    return _worst(codes)
+    return min(codes, key=_CODE_SEVERITY.index)
 
 
 if __name__ == "__main__":
