@@ -96,7 +96,7 @@ ruff format .            # apply formatting
 docker build -t garmin-activities-download:test .
 ```
 
-CI runs Python 3.14, which matches the `python:3.14-slim` base image. The project needs 3.12 or later. The ruff line length is 120.
+CI runs Python 3.15, which matches the `python:3.15-slim` base image. The project needs 3.12 or later. The ruff line length is 120.
 
 [Dockerfile](Dockerfile) has four stages. `base` applies the Debian security updates and holds the shared user and workdir. `builder` installs [requirements.txt](requirements.txt) into `/opt/venv`. `dev` keeps `pip` for the dev container, which [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) selects with `"target": "dev"`. `runtime` is last, so a plain `docker build` produces it.
 
