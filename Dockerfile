@@ -2,7 +2,7 @@
 #   builder -- installs requirements.txt into a venv at /opt/venv
 #   dev     -- the dev container target, keeps pip so dev tooling installs
 #   runtime -- the shipped image, last stage and therefore the default target
-FROM python:3.14-slim AS base
+FROM python:3.15-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

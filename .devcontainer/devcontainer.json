@@ -1,7 +1,7 @@
 {
   "name": "garmin-activities-download",
   // Reuse the project's Dockerfile so the dev environment matches the shipped
-  // image (same python:3.14-slim base and non-root appuser). The `dev` stage
+  // image (same python:3.15-slim base and non-root appuser). The `dev` stage
   // rather than the default `runtime` one: runtime strips pip out, which
   // postCreateCommand below needs.
   "build": {
