@@ -49,6 +49,12 @@ RUN python -m venv /opt/venv && \
 # the way they did before the runtime stage was split out.
 FROM base AS dev
 
+# The official Node.js binaries that the devcontainer node feature installs
+# link against libatomic.so.1. The slim base image does not contain it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libatomic1 && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
